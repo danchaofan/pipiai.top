@@ -1,0 +1,8 @@
+# 服务器信息填写示例
+# ① 把本文件复制一份，命名为：部署配置
+# ② 填入真实信息（部署配置 含服务器地址，不要分享给别人）
+# ③ 之后运行 bash 部署.sh 即可一键同步
+
+SERVER_USER="root"              # SSH 用户名
+SERVER_HOST="47.xx.xx.xx"       # 阿里云服务器公网 IP
+SERVER_DIR="/var/www/studio"    # 服务器上的网站目录（nginx 需指向它，见 README.md）

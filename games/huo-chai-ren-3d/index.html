@@ -1,0 +1,817 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>火柴人跑酷3D · v3</title>
+<style>
+  /* ========== 🖼 页面布置 ========== */
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #0f1226;                 /* 四周深夜蓝，衬托跑道 */
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden; touch-action: none; /* 玩的时候不让页面乱滚 */
+  }
+  canvas { width: min(100vw, calc(100dvh * 420 / 640)); height: auto; }
+</style>
+</head>
+<body><style id="pipiai-exit-style">#pipiai-exit-btn{position:fixed;left:12px;top:12px;z-index:2147483647;display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:999px;background:rgba(10,14,42,.72);border:1px solid rgba(255,214,10,.55);color:#ffd60a;font:800 14px/1.2 "PingFang SC","Microsoft YaHei",system-ui,sans-serif;text-decoration:none;opacity:.45;transition:opacity .2s;box-shadow:0 4px 14px rgba(0,0,0,.35)}#pipiai-exit-btn:hover{opacity:1}</style><a id="pipiai-exit-btn" data-pipiai-exit="1" href="../../index.html" title="回到皮皮的作品墙">🏠 退出</a>
+<canvas id="游戏画面" width="420" height="640"></canvas>
+<script>
+/* ========== 🏃 火柴人跑酷3D · v3 ==========
+   v3 大改装（老板订单）：
+   ① 不再是三条固定赛道——整张地图自由跑，大跑道会拐弯，跟着它转！
+   ② 转向：← →（双人 P1 用 A/D），手机按住屏幕左右拖动；
+   ③ 视角随时切换：按 C 或点右上角 🎥 —— 第三视角看火柴人，第一视角自己当火柴人！ */
+
+const 画布 = document.getElementById('游戏画面');
+const 笔 = 画布.getContext('2d');
+const 宽 = 420, 高 = 640;
+
+/* ========== ⚙️ 一改就见效的数字（敢不敢挑战区） ========== */
+const 重力 = 0.5;        // 🔥 挑战：改成 0.2，火柴人月球漫步，飘得超慢！
+const 跳跃力 = 8.2;      // 🔥 挑战：改成 12，一跳翻过大箱子顶！
+const 二段跳力 = 7.2;    // 空中再蹬一脚的力气（会翻跟头）
+const 速降力 = 13;       // 空中按 ↓，像石头一样砸下来
+const 焦距 = 300, 地平线 = 240;      // 3D 镜头的秘密三件套（相机高度改成会变的了）
+const 第三相机高 = 46, 第三后移 = 150;   // 第三视角：站后面看火柴人
+const 转向速度 = 0.03;   // 每帧最多转多少弧度（越大越灵）
+const 跑道半宽 = 100;    // 大跑道多宽
+const 草地减速 = 0.8;    // 🔥 挑战：改成 1，草地也全速；改成 0.5，出跑道就趴窝
+const 样本间隔 = 40;     // 跑道每隔多远记一个路标点
+
+/* ========== 🗺 关卡表（5 大关，越跑越快越密） ========== */
+const 关卡表 = [
+  { 速度: 5.5, 长度: 11000, 间隔: 820, 类型: ['矮墙'], 提示: '跟着大跑道转弯！红矮墙按 ↑ 跳' },
+  { 速度: 6.2, 长度: 12000, 间隔: 760, 类型: ['矮墙', '大箱子'], 提示: '黄色大箱子：转向绕开它！' },
+  { 速度: 6.8, 长度: 13000, 间隔: 700, 类型: ['矮墙', '大箱子', '高栏'], 提示: '紫色横栏：按 ↓ 滑铲钻过去！' },
+  { 速度: 7.4, 长度: 14000, 间隔: 640, 类型: ['矮墙', '大箱子', '高栏'], 提示: '空中再按一次跳 = 翻跟头二段跳！' },
+  { 速度: 8.0, 长度: 15000, 间隔: 580, 类型: ['矮墙', '大箱子', '高栏'], 提示: '终极狂奔，看左上角小地图认路！' },
+];
+const 障碍配色 = { 矮墙: ['#ff5d7a', '#ff9bb0'], 大箱子: ['#ffb020', '#ffd479'], 高栏: ['#a66cf5', '#c9a3fb'] };
+const 按钮们 = [
+  { y: 446, 文字: '1  单人闯关', 副: '一个人全套操作' },
+  { y: 500, 文字: '2  双人合作', 副: 'P1 转向 · P2 跳跃/滑铲' },
+];
+const 视角按钮 = { x: 宽 - 38, y: 66, 半径: 21 };   // 右上角 🎥
+
+/* ========== 🏠 游戏状态 ========== */
+let 阶段 = '待开始';     // 待开始 / 关卡中 / 摔倒 / 失败 / 过关 / 通关
+let 模式 = '单人';       // 单人 / 双人
+let 关 = 1, 金币数 = 0, 金币快照 = 0;
+let 最高关 = Number(localStorage.getItem('火柴人跑酷3D_最高关') || 1);
+let 总金币纪录 = Number(localStorage.getItem('火柴人跑酷3D_总金币') || 0);
+
+/* 地图与主角（v3 新：自由世界坐标） */
+let 玩家世界x = 0, 玩家世界z = 0, 玩家角 = 0;   // 朝向弧度：0=朝北(+z)
+let 距离 = 0, 速度 = 5.5, 在跑道上 = true;
+let 转向输入 = 0, 想左 = false, 想右 = false, 触屏转向 = null;   // -1..1
+
+/* 跑道中心线：一串路标点，跟着它铺路、摆障碍 */
+let 中心线 = [], 已铺到 = 0, 轨迹角 = 0, 曲率 = 0, 曲率目标 = 0, 上次变曲率 = 0;
+let 世界障碍 = [], 世界金币 = [], 世界柱子 = [], 世界终点 = null;
+let 下一障碍距 = 0, 下一金币距 = 0, 最近阻挡横 = [], 最近样本 = 0;
+
+/* 主角动作 + 镜头 */
+let 玩家y = 0, 玩家vy = 0, 着地 = true, 跳跃次数 = 0, 翻转 = 0;
+let 滑铲中 = false, 滑铲时长 = 0, 想按滑 = false;
+let 跑相位 = 0, 横幅计时 = 0, 摔倒计时 = 0, 摔角 = 0;
+let 视角 = '第三', 视角混合 = 0;         // 0=第三视角, 1=第一视角（中间值=切换动画中）
+let 相机高当前 = 46, 后移当前 = 150;
+let 抖动 = 0, 金币弹跳 = 0, 庆祝计数 = 0;
+
+/* ========== 🔊 声音（现场合成，不用音频文件） ========== */
+let 音响 = null;
+function 确保音响() { if (!音响) 音响 = new AudioContext(); }
+function 播放音(频率列表, 时长 = 0.15, 类型 = 'sine', 音量 = 0.2) {
+  if (!音响) return;
+  频率列表.forEach((频率, 序号) => {
+    const 振荡器 = 音响.createOscillator(), 音量控制 = 音响.createGain();
+    振荡器.type = 类型; 振荡器.frequency.value = 频率;
+    const 开始于 = 音响.currentTime + 序号 * 0.09;
+    振荡器.connect(音量控制); 音量控制.connect(音响.destination);
+    音量控制.gain.setValueAtTime(音量, 开始于);
+    音量控制.gain.exponentialRampToValueAtTime(0.001, 开始于 + 时长);
+    振荡器.start(开始于); 振荡器.stop(开始于 + 时长);
+  });
+}
+const 声_跳 = () => 播放音([440, 587], 0.12, 'square', 0.1);
+const 声_二跳 = () => 播放音([587, 784], 0.12, 'square', 0.12);
+const 声_金币 = () => 播放音([880, 1175], 0.09, 'sine', 0.16);
+const 声_滑 = () => 播放音([160], 0.18, 'sawtooth', 0.08);
+const 声_撞 = () => 播放音([130, 90], 0.28, 'sawtooth', 0.28);
+const 声_视角 = () => 播放音([660, 880], 0.08, 'triangle', 0.1);
+const 声_过关 = () => 播放音([523, 659, 784], 0.18);
+const 声_通关 = () => 播放音([523, 659, 784, 1047, 1319], 0.2);
+
+/* ========== 📐 3D 数学（v3 心脏：世界坐标 → 眼前坐标 → 屏幕） ========== */
+function 投影(x, y, z) {   // (眼前横坐标, 高低, 眼前距离) → 屏幕位置
+  const s = 焦距 / Math.max(z, 25);        // 离得越远 s 越小 → 画得越小
+  return { x: 宽 / 2 + x * s, y: 地平线 + (相机高当前 - y) * s, s };
+}
+function 视野(wx, wz) {    // 世界坐标 → 我眼前多远、偏左还是偏右（跟着朝向转！）
+  const dx = wx - 相机x, dz = wz - 相机z;
+  return { 横: dx * Math.cos(相机角) - dz * Math.sin(相机角),
+           纵: dx * Math.sin(相机角) + dz * Math.cos(相机角) };
+}
+let 相机x = 0, 相机z = -150, 相机角 = 0;   // 每帧根据主角位置和视角算
+function 世界点投影(wx, wy, wz) { const v = 视野(wx, wz); return 投影(v.横, wy, v.纵); }
+function 中间(a, b, t) { return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }; }
+function 字(大小, 粗 = true) { 笔.font = `${粗 ? 'bold ' : ''}${大小}px system-ui, "PingFang SC", sans-serif`; }
+function 骨架线(a, b, 色, 粗 = 5) {
+  笔.strokeStyle = 色; 笔.lineCap = 'round';
+  笔.lineWidth = Math.max(1.5, 粗 * (a.s + b.s) / 2);
+  笔.beginPath(); 笔.moveTo(a.x, a.y); 笔.lineTo(b.x, b.y); 笔.stroke();
+}
+
+/* ========== 🛣 铺路（跑道会自己拐弯，障碍金币路边柱全跟着长出来） ========== */
+function 铺路(铺到多远) {
+  while (已铺到 < 铺到多远) {
+    if (已铺到 > 上次变曲率 + 300 + Math.random() * 500) {         // 每隔一段随机换个弯
+      曲率目标 = (Math.random() * 2 - 1) * 0.0025; 上次变曲率 = 已铺到;
+    }
+    曲率 += (曲率目标 - 曲率) * 0.02;
+    const 末 = 中心线[中心线.length - 1];
+    const 新角 = 末.角 + 曲率 * 样本间隔;
+    中心线.push({
+      x: 末.x + Math.sin((末.角 + 新角) / 2) * 样本间隔,
+      z: 末.z + Math.cos((末.角 + 新角) / 2) * 样本间隔,
+      角: 新角, 距: 已铺到 += 样本间隔,
+    });
+    在新路标上摆东西(中心线[中心线.length - 1]);
+  }
+}
+function 在新路标上摆东西(s) {
+  const L = 关卡表[关 - 1];
+  /* 障碍 */
+  if (s.距 > 下一障碍距 && s.距 < L.长度 - 1200) {
+    const 类型 = L.类型[Math.floor(Math.random() * L.类型.length)];
+    const 色 = 障碍配色[类型];
+    const 基础 = { 类型, x: s.x, z: s.z, 角: s.角, 色: 色[0], 顶色: 色[1] };
+    if (类型 === '高栏') {   // 紫横栏横跨整条跑道：只能滑铲！
+      世界障碍.push({ ...基础, 半宽: 跑道半宽 - 4, y0: 32, y1: 60 }); 最近阻挡横 = [999];
+    } else if (类型 === '矮墙' && 关 >= 2 && Math.random() < 0.3) {   // 全宽红墙：必须跳！
+      世界障碍.push({ ...基础, 半宽: 跑道半宽 - 4, y0: 0, y1: 26 }); 最近阻挡横 = [999];
+    } else {
+      const 横 = (Math.random() - 0.5) * 150;
+      世界障碍.push({ ...基础, 横, 半宽: 类型 === '大箱子' ? 28 : 26, y0: 0, y1: 类型 === '大箱子' ? 88 : 26,
+        x: s.x + Math.cos(s.角) * 横, z: s.z - Math.sin(s.角) * 横 });
+      最近阻挡横 = [横];
+      if (类型 === '大箱子' && 关 >= 2 && Math.random() < 0.35) {   // 双箱子：留一条缝
+        const 横2 = 横 > 0 ? 横 - 110 : 横 + 110;
+        世界障碍.push({ ...基础, 横: 横2, 半宽: 28, y0: 0, y1: 88,
+          x: s.x + Math.cos(s.角) * 横2, z: s.z - Math.sin(s.角) * 横2 });
+        最近阻挡横 = [横, 横2];
+      }
+    }
+    下一障碍距 = s.距 + L.间隔 * (0.8 + Math.random() * 0.5);
+  }
+  /* 金币 */
+  if (s.距 > 下一金币距 && s.距 < L.长度 - 600) {
+    const 候选 = [-60, 0, 60].filter(横 => 最近阻挡横.every(挡 => Math.abs(挡 - 横) >= 55));
+    const 横 = 候选.length ? 候选[Math.floor(Math.random() * 候选.length)] : (Math.random() - 0.5) * 120;
+    const 弧线 = Math.random() < 0.35;
+    const 起点 = 中心线.length - 1;
+    for (let j = 0; j < 5 && 起点 + j < 中心线.length; j++) {
+      const t = 中心线[起点 + j];
+      世界金币.push({ x: t.x + Math.cos(t.角) * 横, z: t.z - Math.sin(t.角) * 横,
+        y: 弧线 ? 16 + Math.sin(j / 4 * Math.PI) * 46 : 18, 转: Math.random() * 6 });
+    }
+    下一金币距 = s.距 + 600 + Math.random() * 500;
+  }
+  /* 路边糖果柱 */
+  if (中心线.length % 3 === 0) {
+    const 侧 = (中心线.length / 3) % 2 === 0 ? 1 : -1;
+    const 偏 = 侧 * (跑道半宽 + 35 + Math.random() * 50);
+    世界柱子.push({ x: s.x + Math.cos(s.角) * 偏, z: s.z - Math.sin(s.角) * 偏,
+      色: ['#ff8fa3', '#ffd60a', '#7ee8fa', '#c9a3fb'][Math.floor(中心线.length / 3) % 4] });
+  }
+  /* 终点门 */
+  if (!世界终点 && s.距 >= L.长度) 世界终点 = { x: s.x, z: s.z, 角: s.角 };
+}
+
+/* ========== 🎬 游戏流程 ========== */
+function 开始关卡(n) {
+  关 = n; 阶段 = '关卡中'; 距离 = 0;
+  中心线 = [{ x: 0, z: 0, 角: 0, 距: 0 }]; 已铺到 = 0; 轨迹角 = 0; 曲率 = 0; 曲率目标 = 0; 上次变曲率 = 0;
+  世界障碍 = []; 世界金币 = []; 世界柱子 = []; 世界终点 = null;
+  下一障碍距 = 750; 下一金币距 = 1200; 最近阻挡横 = []; 最近样本 = 0;
+  玩家世界x = 0; 玩家世界z = 0; 玩家角 = 0;
+  玩家y = 0; 玩家vy = 0; 着地 = true; 跳跃次数 = 0; 翻转 = 0;
+  滑铲中 = false; 想左 = 想右 = false; 触屏转向 = null;
+  金币快照 = 金币数; 横幅计时 = 110; 庆祝计数 = 0;
+  铺路(1400);
+}
+function 开跑(选哪个模式) {
+  模式 = 选哪个模式;
+  金币数 = 0; 开始关卡(Math.min(最高关, 5));
+}
+function 切换视角() {
+  视角 = 视角 === '第三' ? '第一' : '第三';
+  声_视角();
+}
+function 界面推进() {
+  if (阶段 === '待开始') 开跑('单人');
+  else if (阶段 === '失败') { 金币数 = 金币快照; 开始关卡(关); }
+  else if (阶段 === '过关') 开始关卡(关 + 1);
+  else if (阶段 === '通关') {
+    阶段 = '待开始'; 玩家y = 0; 着地 = true; 滑铲中 = false; 想左 = 想右 = false; 触屏转向 = null;
+  }
+}
+function 摔倒() {
+  阶段 = '摔倒'; 摔倒计时 = 60; 摔角 = 0; 玩家vy = 5;
+  声_撞(); 抖动 = 16;
+  const 头 = 投影(0, 玩家y + 56, 后移当前);
+  for (let i = 0; i < 6; i++)
+    粒子.push({ x: 头.x + (Math.random() - 0.5) * 60, y: 头.y - 10 - Math.random() * 30,
+      vx: (Math.random() - 0.5) * 1.5, vy: -0.6, 重力: -0.005, 寿命: 1.3, r: 22, 表情: '💫' });
+}
+function 过关啦() {
+  庆祝计数 = 180;
+  if (关 >= 5) {
+    阶段 = '通关'; 声_通关();
+    if (金币数 > 总金币纪录) { 总金币纪录 = 金币数; localStorage.setItem('火柴人跑酷3D_总金币', 总金币纪录); }
+    if (最高关 < 6) { 最高关 = 6; localStorage.setItem('火柴人跑酷3D_最高关', 最高关); }
+  } else {
+    阶段 = '过关'; 声_过关();
+    if (最高关 < 关 + 1) { 最高关 = 关 + 1; localStorage.setItem('火柴人跑酷3D_最高关', 最高关); }
+  }
+}
+function 火花(p) {
+  for (let i = 0; i < 7; i++)
+    粒子.push({ x: p.x, y: p.y, vx: (Math.random() - 0.5) * 5, vy: -Math.random() * 4 - 1,
+      重力: 0.15, 寿命: 0.8, r: 2 + Math.random() * 3, 颜色: Math.random() < 0.5 ? '#ffd60a' : '#fff3b0' });
+}
+function 撒烟花(x, y) {
+  const 色表 = ['#ff5d7a', '#ffd60a', '#7ee8fa', '#9ef01a', '#c9a3fb'];
+  for (let i = 0; i < 24; i++) {
+    const 角 = Math.random() * Math.PI * 2, 力 = 2 + Math.random() * 5;
+    粒子.push({ x, y, vx: Math.cos(角) * 力, vy: Math.sin(角) * 力,
+      重力: 0.08, 寿命: 1.1, r: 2.5 + Math.random() * 2.5, 颜色: 色表[i % 5] });
+  }
+}
+let 粒子 = [];
+
+/* ========== 🕹 操作（v3：转向代替换道，C/🎥 切视角） ========== */
+function 跳() {
+  if (阶段 !== '关卡中') return;
+  if (着地 || 滑铲中) {
+    滑铲中 = false; 着地 = false; 玩家vy = 跳跃力; 跳跃次数 = 1; 声_跳();
+  } else if (跳跃次数 === 1) {
+    玩家vy = 二段跳力; 跳跃次数 = 2; 翻转 = 1; 声_二跳();   // 翻跟头！
+  }
+}
+function 开始滑铲() {
+  if (阶段 !== '关卡中') return;
+  if (!着地) { 玩家vy = -速降力; return; }   // 空中按 ↓ = 速降
+  if (!滑铲中) { 滑铲中 = true; 滑铲时长 = 0; 声_滑(); }
+}
+document.addEventListener('keydown', e => {
+  确保音响();
+  const k = e.code;
+  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(k)) e.preventDefault();
+
+  if (阶段 === '待开始') {   // 封面：选模式
+    if (k === 'Digit2' || k === 'Numpad2') 开跑('双人');
+    else if (k === 'Digit1' || k === 'Numpad1' || k === 'Enter' || k === 'ArrowUp' || k === 'KeyW' || k === 'Space') 开跑('单人');
+    return;
+  }
+  if (阶段 !== '关卡中') {
+    if (k === 'Space' || k === 'ArrowUp' || k === 'KeyW' || k === 'Enter') 界面推进();
+    return;
+  }
+  if (k === 'KeyC') { 切换视角(); return; }   // 视角切换！
+
+  const 是左 = k === 'ArrowLeft' || k === 'KeyA';
+  const 是右 = k === 'ArrowRight' || k === 'KeyD';
+  if (是左) 想左 = true;                                    // P1：转向
+  if (是右) 想右 = true;
+  if (模式 === '单人') {
+    if (k === 'ArrowUp' || k === 'KeyW' || k === 'Space') 跳();
+    if (k === 'ArrowDown' || k === 'KeyS') { 想按滑 = true; 开始滑铲(); }
+  } else {
+    /* 双人：P1 管转向（A/D 或 ← →）；P2 管跳铲（J 或 ↑、空格 / K 或 ↓） */
+    if (k === 'KeyJ' || k === 'ArrowUp' || k === 'Space') 跳();
+    if (k === 'KeyK' || k === 'ArrowDown') { 想按滑 = true; 开始滑铲(); }
+  }
+});
+document.addEventListener('keyup', e => {
+  const k = e.code;
+  if (k === 'ArrowLeft' || k === 'KeyA') 想左 = false;
+  if (k === 'ArrowRight' || k === 'KeyD') 想右 = false;
+  if (['ArrowDown', 'KeyS', 'KeyK'].includes(k)) 想按滑 = false;
+});
+
+/* 触屏：按住左右拖 = 转向；快速上滑 = 跳，下滑 = 铲；点一下 = 跳；点 🎥 = 切视角
+   双人：左半屏归 P1（拖动转向），右半屏归 P2（点/上滑=跳，下滑=铲） */
+function 屏幕坐标(e) {
+  const 矩形 = 画布.getBoundingClientRect();
+  return { x: (e.clientX - 矩形.left) / 矩形.width * 宽, y: (e.clientY - 矩形.top) / 矩形.height * 高 };
+}
+let 触点 = null, 已滑 = false, 触点半屏 = 0;
+画布.addEventListener('pointerdown', e => {
+  确保音响();
+  触点 = { x: e.clientX, y: e.clientY }; 已滑 = false;
+  触点半屏 = 屏幕坐标(e).x < 宽 / 2 ? 0 : 1;   // 0=左半屏 1=右半屏
+});
+画布.addEventListener('pointermove', e => {
+  if (!触点 || 阶段 !== '关卡中') return;
+  const dx = e.clientX - 触点.x, dy = e.clientY - 触点.y;
+  if (已滑) {   // 已认成"转向拖动"：持续跟着手指转
+    if (触屏转向 !== null) 触屏转向 = Math.max(-1, Math.min(1, dx / 70));
+    return;
+  }
+  if (Math.abs(dx) < 30 && Math.abs(dy) < 30) return;
+  const 横向 = Math.abs(dx) > Math.abs(dy);
+  if (!横向) {   // 快速上/下滑：跳 / 铲
+    已滑 = true;
+    if (dy < 0) 跳();
+    else { 想按滑 = true; 开始滑铲(); setTimeout(() => 想按滑 = false, 480); }
+    return;
+  }
+  if (模式 === '双人' && 触点半屏 === 1) return;   // 双人右半屏是 P2 的，不转向
+  已滑 = true; 触屏转向 = Math.max(-1, Math.min(1, dx / 70));   // 左右拖 = 转向！
+});
+画布.addEventListener('pointerup', e => {
+  if (!触点) return;
+  触屏转向 = null;
+  if (!已滑) {
+    const p = 屏幕坐标(e);
+    const 点中视角钮 = Math.hypot(p.x - 视角按钮.x, p.y - 视角按钮.y) < 视角按钮.半径 + 6;
+    if (阶段 === '关卡中') { if (点中视角钮) 切换视角(); else 跳(); }
+    else if (阶段 === '待开始') {
+      if (p.x > 90 && p.x < 330) {
+        if (p.y > 按钮们[0].y && p.y < 按钮们[0].y + 46) 开跑('单人');
+        else if (p.y > 按钮们[1].y && p.y < 按钮们[1].y + 46) 开跑('双人');
+      }
+    }
+    else if (!点中视角钮) 界面推进();
+  }
+  触点 = null;
+});
+
+/* ========== 🔄 主循环（每秒约 60 次） ========== */
+let 上一帧时间 = 0;
+function 某帧过去了(时间戳) {
+  const dt = Math.min((时间戳 - 上一帧时间) / 16.666, 3);   // 电脑再快再慢，速度都一样
+  上一帧时间 = 时间戳;
+  更新(dt); 绘制();
+  requestAnimationFrame(某帧过去了);
+}
+
+function 更新(dt) {
+  跑相位 += 0.05 * 速度 * dt * (着地 ? 1 : 0.4);
+  if (阶段 === '待开始') { 距离 += 2.2 * dt; }
+  if (阶段 === '关卡中') {
+    const L = 关卡表[关 - 1];
+
+    /* 转向 & 前进（v3 心跳：想去哪，自己转！） */
+    转向输入 = 触屏转向 !== null ? 触屏转向 : ((想右 ? 1 : 0) - (想左 ? 1 : 0));
+    玩家角 += 转向输入 * 转向速度 * dt;
+
+    找最近路标();
+    const 实速 = L.速度 * (在跑道上 ? 1 : 草地减速);   // 草地会慢一点
+    玩家世界x += Math.sin(玩家角) * 实速 * dt;
+    玩家世界z += Math.cos(玩家角) * 实速 * dt;
+    距离 += 实速 * dt;
+    铺路(距离 + 1400);
+    if (横幅计时 > 0) 横幅计时 -= dt;
+
+    /* 跳跃物理 */
+    if (!着地) {
+      玩家vy -= 重力 * dt; 玩家y += 玩家vy * dt;
+      if (玩家y <= 0) {
+        玩家y = 0; 着地 = true; 跳跃次数 = 0; 翻转 = 0;
+        const 脚 = 投影(0, 0, 后移当前);
+        for (let i = 0; i < 5; i++) 粒子.push({ x: 脚.x + (Math.random() - 0.5) * 30, y: 脚.y, vx: (Math.random() - 0.5) * 2, vy: -Math.random() * 1.5, 重力: 0.05, 寿命: 0.5, r: 2.5, 颜色: '#cfd3ea' });
+        if (想按滑) { 滑铲中 = true; 滑铲时长 = 0; 声_滑(); }
+      }
+    }
+    if (滑铲中) {
+      滑铲时长 += dt / 60;
+      if (Math.random() < 0.25 * dt) { const 脚 = 投影(-20, 6, 后移当前); 粒子.push({ x: 脚.x, y: 脚.y, vx: -1 - Math.random(), vy: -Math.random(), 重力: 0.02, 寿命: 0.5, r: 3, 颜色: '#d9dce8' }); }
+      if ((!想按滑 && 滑铲时长 > 0.35) || 滑铲时长 > 0.9) 滑铲中 = false;
+    }
+    if (翻转 > 0) 翻转 = Math.max(0, 翻转 - 0.042 * dt);
+
+    /* 障碍碰撞（在障碍自己的方向上量横竖，转弯也准） */
+    for (let i = 世界障碍.length - 1; i >= 0; i--) {
+      const o = 世界障碍[i];
+      const dx = 玩家世界x - o.x, dz = 玩家世界z - o.z;
+      if (Math.abs(dx) + Math.abs(dz) > 300) {
+        if (视野(o.x, o.z).纵 < -120) 世界障碍.splice(i, 1);   // 甩在身后老远就回收
+        continue;
+      }
+      const 横 = dx * Math.cos(o.角) - dz * Math.sin(o.角);
+      const 纵 = dx * Math.sin(o.角) + dz * Math.cos(o.角);
+      if (Math.abs(横) < o.半宽 + 10 && Math.abs(纵) < 20) {
+        const 顶 = 玩家y + (滑铲中 ? 16 : 58);
+        let 撞了 = false;
+        if (o.类型 === '矮墙') 撞了 = 玩家y < o.y1 - 3;
+        if (o.类型 === '大箱子') 撞了 = 玩家y < o.y1 - 4;
+        if (o.类型 === '高栏') 撞了 = 玩家y < o.y1 - 2 && 顶 > o.y0;
+        if (撞了) { 摔倒(); break; }
+      }
+    }
+    if (阶段 !== '关卡中') { 更新相机(dt); 更新粒子(dt); return; }
+
+    /* 金币 */
+    for (let i = 世界金币.length - 1; i >= 0; i--) {
+      const c = 世界金币[i];
+      c.转 += 0.14 * dt;
+      if (Math.hypot(c.x - 玩家世界x, c.z - 玩家世界z) < 30 && Math.abs(玩家y + 30 - c.y) < 30) {
+        世界金币.splice(i, 1); 金币数++; 声_金币(); 金币弹跳 = 10; 火花(世界点投影(c.x, c.y, c.z));
+        continue;
+      }
+      if (视野(c.x, c.z).纵 < -120) 世界金币.splice(i, 1);
+    }
+    /* 终点门 */
+    if (世界终点 && Math.hypot(世界终点.x - 玩家世界x, 世界终点.z - 玩家世界z) < 35) 过关啦();
+  } else if (阶段 === '摔倒') {
+    摔倒计时 -= dt; 摔角 += 0.22 * dt;
+    玩家vy -= 重力 * dt; 玩家y = Math.max(0, 玩家y + 玩家vy * dt);
+    if (玩家y === 0 && 玩家vy < 0) 玩家vy = -玩家vy * 0.4;   // 弹两下
+    if (摔倒计时 <= 0) 阶段 = '失败';
+  }
+  if ((阶段 === '过关' || 阶段 === '通关') && 庆祝计数 > 0) {
+    庆祝计数 -= dt;
+    if (Math.random() < 0.07 * dt) 撒烟花(60 + Math.random() * (宽 - 120), 90 + Math.random() * 180);
+  }
+  更新相机(dt);
+  更新粒子(dt);
+}
+function 找最近路标() {   // 在附近的路标里找离主角最近的，顺便量出偏出跑道多远
+  let 最好 = 最近样本, 最好距 = Infinity;
+  for (let i = Math.max(0, 最近样本 - 10); i < Math.min(中心线.length, 最近样本 + 15); i++) {
+    const s = 中心线[i];
+    const d = (s.x - 玩家世界x) ** 2 + (s.z - 玩家世界z) ** 2;
+    if (d < 最好距) { 最好距 = d; 最好 = i; }
+  }
+  最近样本 = 最好;
+  const s = 中心线[最好];
+  const dx = 玩家世界x - s.x, dz = 玩家世界z - s.z;
+  在跑道上 = Math.abs(dx * Math.cos(s.角) - dz * Math.sin(s.角)) < 跑道半宽 - 6;
+}
+function 更新相机(dt) {   // 镜头跟着主角；切视角时平滑滑过去
+  const 目标混合 = 视角 === '第一' ? 1 : 0;
+  视角混合 += (目标混合 - 视角混合) * 0.13 * dt;
+  if (Math.abs(视角混合 - 目标混合) < 0.004) 视角混合 = 目标混合;
+  后移当前 = 第三后移 * (1 - 视角混合);
+  const 第一高 = 玩家y + (滑铲中 ? 18 : 57);
+  相机高当前 = 第三相机高 * (1 - 视角混合) + 第一高 * 视角混合;
+  相机角 = 玩家角;
+  相机x = 玩家世界x - Math.sin(相机角) * 后移当前;
+  相机z = 玩家世界z - Math.cos(相机角) * 后移当前;
+}
+function 更新粒子(dt) {
+  for (let i = 粒子.length - 1; i >= 0; i--) {
+    const p = 粒子[i];
+    p.x += p.vx * dt; p.y += p.vy * dt; p.vy += p.重力 * dt; p.寿命 -= 0.018 * dt;
+    if (p.寿命 <= 0) 粒子.splice(i, 1);
+  }
+  if (抖动 > 0) 抖动 -= dt;
+  if (金币弹跳 > 0) 金币弹跳 -= dt;
+}
+
+/* ========== 🎨 画画 ========== */
+function 绘制() {
+  笔.save();
+  if (抖动 > 0) 笔.translate((Math.random() - 0.5) * 10, (Math.random() - 0.5) * 10);   // 💥 抖屏
+  if (阶段 === '待开始') { 相机角 = 玩家角; 相机x = -Math.sin(相机角) * 第三后移; 相机z = -Math.cos(相机角) * 第三后移; 相机高当前 = 第三相机高; 后移当前 = 第三后移; }
+  画天空(); 画大跑道();
+  画世界物件();
+  粒子.forEach(p => {
+    笔.globalAlpha = Math.max(0, Math.min(1, p.寿命));
+    if (p.表情) { 笔.font = `${p.r}px serif`; 笔.textAlign = 'center'; 笔.textBaseline = 'middle'; 笔.fillText(p.表情, p.x, p.y); }
+    else { 笔.fillStyle = p.颜色; 笔.beginPath(); 笔.arc(p.x, p.y, p.r, 0, 6.3); 笔.fill(); }
+    笔.globalAlpha = 1;
+  });
+  if (阶段 === '关卡中' && 速度 > 6.9) {   // 高速时的风线
+    笔.strokeStyle = 'rgba(255,255,255,0.3)'; 笔.lineWidth = 2;
+    for (let i = 0; i < 5; i++) {
+      const 左 = Math.random() < 0.5, y = 50 + Math.random() * 520, len = 40 + Math.random() * 70;
+      const x = 左 ? Math.random() * 80 : 宽 - 80 + Math.random() * 80;
+      笔.beginPath(); 笔.moveTo(x, y); 笔.lineTo(x + (左 ? -1 : 1) * len, y); 笔.stroke();
+    }
+  }
+  if (阶段 === '待开始') 画封面();
+  else {
+    画顶部信息();
+    if (阶段 === '关卡中') { 画小地图(); 画视角按钮(); }
+    if (横幅计时 > 0) 画横幅();
+    if (阶段 === '失败') 画失败();
+    if (阶段 === '过关') 画过关();
+    if (阶段 === '通关') 画通关();
+  }
+  笔.restore();
+}
+function 画世界物件() {
+  /* 远的先画、近的后画，压在一起就是 3D！ */
+  const 清单 = [];
+  世界柱子.forEach(p => {
+    const v = 视野(p.x, p.z);
+    if (v.纵 > 30 && v.纵 < 900) 清单.push({ z: v.纵, 画: () => {
+      const 底 = 投影(v.横, 0, v.纵), 顶 = 投影(v.横, 46, v.纵);
+      笔.strokeStyle = p.色; 笔.lineWidth = Math.max(2, 5 * 底.s); 笔.lineCap = 'round';
+      笔.beginPath(); 笔.moveTo(底.x, 底.y); 笔.lineTo(顶.x, 顶.y); 笔.stroke();
+      笔.fillStyle = '#ffffff'; 笔.beginPath(); 笔.arc(顶.x, 顶.y, Math.max(2, 4 * 底.s), 0, 6.3); 笔.fill();
+    } });
+  });
+  世界障碍.forEach(o => { const v = 视野(o.x, o.z); if (v.纵 > -50 && v.纵 < 900) 清单.push({ z: Math.max(v.纵, 1), 画: () => 画障碍(o) }); });
+  世界金币.forEach(c => { const v = 视野(c.x, c.z); if (v.纵 > 25 && v.纵 < 900) 清单.push({ z: v.纵, 画: () => 画金币(c) }); });
+  if (世界终点) { const v = 视野(世界终点.x, 世界终点.z); if (v.纵 > -50 && v.纵 < 950) 清单.push({ z: Math.max(v.纵, 1), 画: () => 画终点(世界终点) }); }
+  if (后移当前 > 40) 清单.push({ z: 后移当前, 画: 画火柴人 });   // 第一视角看不见自己
+  清单.sort((a, b) => b.z - a.z).forEach(o => o.画());
+}
+function 画天空() {
+  const 天 = 笔.createLinearGradient(0, 0, 0, 地平线 + 40);
+  天.addColorStop(0, '#4fb3ff'); 天.addColorStop(1, '#e9f8ff');
+  笔.fillStyle = 天; 笔.fillRect(0, 0, 宽, 地平线 + 40);
+  笔.fillStyle = 'rgba(255,233,120,0.25)'; 笔.beginPath(); 笔.arc(80 - 玩家角 * 25, 86, 46, 0, 6.3); 笔.fill();
+  笔.fillStyle = 'rgba(255,233,120,0.9)'; 笔.beginPath(); 笔.arc(80 - 玩家角 * 25, 86, 28, 0, 6.3); 笔.fill();
+  笔.fillStyle = 'rgba(255,255,255,0.85)';
+  for (let i = 0; i < 3; i++) {
+    const cx = ((i * 180 + 距离 * 0.12 + 玩家角 * 60) % (宽 + 160)) - 80;   // 转弯时云也会滑
+    笔.beginPath(); 笔.ellipse(cx, 70 + i * 38, 46, 14, 0, 0, 6.3); 笔.fill();
+  }
+  笔.fillStyle = '#a8cfe8';   // 远处小山
+  笔.beginPath(); 笔.moveTo(0, 地平线);
+  for (let x = 0; x <= 宽; x += 60) 笔.lineTo(x, 地平线 - 14 - 16 * Math.abs(Math.sin((x + 玩家角 * 80) * 0.02 + 2)));
+  笔.lineTo(宽, 地平线); 笔.closePath(); 笔.fill();
+}
+function 画大跑道() {
+  笔.fillStyle = '#8fd694'; 笔.fillRect(0, 地平线 - 2, 宽, 高 - 地平线 + 2);   // 草地
+  /* 收集眼前的路标，连成一条大跑道 */
+  const 左边 = [], 右边 = [], 中线 = [];
+  for (let i = Math.max(0, 最近样本 - 4); i < 中心线.length; i++) {
+    const s = 中心线[i], v = 视野(s.x, s.z);
+    if (v.纵 > 880) break;
+    if (v.纵 < 26) continue;
+    左边.push(投影(v.横 - 跑道半宽, 0, v.纵));
+    右边.push(投影(v.横 + 跑道半宽, 0, v.纵));
+    中线.push({ 点: 投影(v.横, 0, v.纵), 序: i });
+  }
+  if (左边.length < 2) return;
+  笔.fillStyle = '#5b5f7d';   // 跑道整条
+  笔.beginPath();
+  笔.moveTo(左边[0].x, 左边[0].y);
+  for (let i = 1; i < 左边.length; i++) 笔.lineTo(左边[i].x, 左边[i].y);
+  for (let i = 右边.length - 1; i >= 0; i--) 笔.lineTo(右边[i].x, 右边[i].y);
+  笔.closePath(); 笔.fill();
+  笔.strokeStyle = '#e8eaf2'; 笔.lineWidth = 4; 笔.lineJoin = 'round';   // 两边白线
+  for (const 边 of [左边, 右边]) {
+    笔.beginPath(); 笔.moveTo(边[0].x, 边[0].y);
+    for (let i = 1; i < 边.length; i++) 笔.lineTo(边[i].x, 边[i].y);
+    笔.stroke();
+  }
+  for (let i = 0; i + 1 < 中线.length; i += 2) {   // 中间虚线（钉在世界里，跑过去自然往后飞）
+    const a = 中线[i].点, b = 中线[i + 1].点;
+    笔.strokeStyle = '#cfd3ea'; 笔.lineWidth = Math.max(1, 3 * a.s);
+    笔.beginPath(); 笔.moveTo(a.x, a.y); 笔.lineTo(b.x, b.y); 笔.stroke();
+  }
+}
+function 画障碍(o) {
+  const 前进 = { x: Math.sin(o.角), z: Math.cos(o.角) }, 右向 = { x: Math.cos(o.角), z: -Math.sin(o.角) };
+  const 角点 = (横偏, 纵偏, y) => 世界点投影(o.x + 右向.x * 横偏 + 前进.x * 纵偏, y, o.z + 右向.z * 横偏 + 前进.z * 纵偏);
+  const 近纵 = 视野(o.x + 前进.x * 12, o.z + 前进.z * 12).纵 < 视野(o.x - 前进.x * 12, o.z - 前进.z * 12).纵 ? 12 : -12;
+  const A = 角点(-o.半宽, 近纵, o.y0), B = 角点(o.半宽, 近纵, o.y0);
+  const C = 角点(o.半宽, 近纵, o.y1), D = 角点(-o.半宽, 近纵, o.y1);
+  const E = 角点(-o.半宽, -近纵, o.y1), F = 角点(o.半宽, -近纵, o.y1);
+  if (o.类型 === '高栏') {   // 两根撑着横栏的柱子
+    for (const 侧 of [-96, 96]) {
+      const p1 = 角点(侧, 近纵, 0), p2 = 角点(侧, 近纵, 34);
+      笔.strokeStyle = o.色; 笔.lineWidth = Math.max(2, 5 * p1.s);
+      笔.beginPath(); 笔.moveTo(p1.x, p1.y); 笔.lineTo(p2.x, p2.y); 笔.stroke();
+    }
+  }
+  笔.fillStyle = o.色;   // 朝向我的脸
+  笔.beginPath(); 笔.moveTo(A.x, A.y); 笔.lineTo(B.x, B.y); 笔.lineTo(C.x, C.y); 笔.lineTo(D.x, D.y); 笔.closePath(); 笔.fill();
+  笔.strokeStyle = 'rgba(30,20,60,0.35)'; 笔.lineWidth = 2; 笔.stroke();
+  笔.fillStyle = o.顶色;   // 顶面（亮一点，立体感）
+  笔.beginPath(); 笔.moveTo(D.x, D.y); 笔.lineTo(C.x, C.y); 笔.lineTo(F.x, F.y); 笔.lineTo(E.x, E.y); 笔.closePath(); 笔.fill();
+  const 面宽 = B.x - A.x, 中心 = 中间(A, C, 0.5);
+  笔.textAlign = 'center'; 笔.textBaseline = 'middle';
+  if (o.类型 === '矮墙') {   // 白色警戒条
+    笔.fillStyle = 'rgba(255,255,255,0.75)';
+    笔.beginPath();
+    笔.moveTo(中间(A, B, 0.15).x, 中间(A, B, 0.15).y); 笔.lineTo(中间(A, B, 0.42).x, 中间(A, B, 0.42).y);
+    笔.lineTo(中间(D, C, 0.72).x, 中间(D, C, 0.72).y); 笔.lineTo(中间(D, C, 0.45).x, 中间(D, C, 0.45).y);
+    笔.closePath(); 笔.fill();
+  } else if (o.类型 === '大箱子') {
+    笔.fillStyle = '#7a4b00'; 字(Math.max(10, 面宽 * 0.35)); 笔.fillText('!', 中心.x, 中心.y);
+  } else {
+    笔.fillStyle = '#ffffff'; 字(Math.max(9, 面宽 * 0.09)); 笔.fillText('⬇ 滑 铲 ⬇', 中心.x, 中心.y);
+  }
+}
+function 画金币(c) {
+  const v = 视野(c.x, c.z);
+  const 浮 = Math.sin(距离 * 0.06 + c.z * 0.05) * 2.5;
+  const p = 投影(v.横, c.y + 浮, v.纵), r = 11 * p.s;
+  笔.save(); 笔.translate(p.x, p.y); 笔.scale(Math.max(0.18, Math.abs(Math.cos(c.转))), 1);   // 转起来！
+  笔.fillStyle = '#ffd60a'; 笔.beginPath(); 笔.arc(0, 0, r, 0, 6.3); 笔.fill();
+  笔.strokeStyle = '#c98a00'; 笔.lineWidth = Math.max(1, 2.2 * p.s); 笔.stroke();
+  笔.strokeStyle = '#fff3b0'; 笔.lineWidth = Math.max(1, 1.4 * p.s);
+  笔.beginPath(); 笔.arc(0, 0, r * 0.55, 0, 6.3); 笔.stroke();
+  笔.restore();
+}
+function 画终点(g) {
+  const 前进 = { x: Math.sin(g.角), z: Math.cos(g.角) }, 右向 = { x: Math.cos(g.角), z: -Math.sin(g.角) };
+  const 点 = (横偏, y) => 世界点投影(g.x + 右向.x * 横偏, y, g.z + 右向.z * 横偏);
+  笔.strokeStyle = '#ffd60a'; 笔.lineCap = 'round';
+  for (const 侧 of [-108, 108]) {
+    const p1 = 点(侧, 0), p2 = 点(侧, 80);
+    笔.lineWidth = Math.max(2, 8 * p1.s);
+    笔.beginPath(); 笔.moveTo(p1.x, p1.y); 笔.lineTo(p2.x, p2.y); 笔.stroke();
+  }
+  const 左幅 = 点(-108, 64), 右幅 = 点(108, 64), 左顶 = 点(-108, 80), 右顶 = 点(108, 80);
+  笔.fillStyle = '#ff4d6d';   // 终点横幅
+  笔.beginPath(); 笔.moveTo(左幅.x, 左幅.y); 笔.lineTo(右幅.x, 右幅.y); 笔.lineTo(右顶.x, 右顶.y); 笔.lineTo(左顶.x, 左顶.y); 笔.closePath(); 笔.fill();
+  笔.strokeStyle = '#ffffff'; 笔.lineWidth = 2; 笔.stroke();
+  const 中 = 点(0, 72);
+  笔.fillStyle = '#ffffff'; 字(Math.max(10, 15 * 中.s)); 笔.textAlign = 'center'; 笔.textBaseline = 'middle';
+  笔.fillText('🏁 终点', 中.x, 中.y);
+}
+
+/* ========== 🏃 火柴人（橙头无眼红头带，二段跳翻跟头） ========== */
+function 姿态点() {
+  if (滑铲中) return {   // 滑铲：往后一躺，脚朝前
+    头: [0, 23, -13], 颈: [0, 17, -8], 髋: [0, 9, 0],
+    膝A: [-3, 8, 12], 脚A: [-3, 4, 22], 膝B: [3, 7, 10], 脚B: [3, 3, 19],
+    肘A: [-3, 12, -6], 手A: [-5, 7, -13], 肘B: [3, 12, -8], 手B: [5, 8, -15],
+  };
+  if (!着地 || 阶段 === '摔倒') return {   // 空中收腿（翻跟头也是这套）
+    头: [0, 56, 5], 颈: [0, 46, 4], 髋: [0, 30, 0],
+    膝A: [-5, 23, 10], 脚A: [-5, 15, 15], 膝B: [5, 24, 7], 脚B: [5, 17, 12],
+    肘A: [-7, 49, 3], 手A: [-9, 53, 7], 肘B: [6, 50, 2], 手B: [8, 54, 6],
+  };
+  const p = 跑相位, 摆A = Math.sin(p), 摆B = Math.sin(p + Math.PI);
+  const 侧倾 = 转向输入 * 4;   // 转弯时身体往弯里歪一点
+  return {   // 撒腿狂奔
+    头: [侧倾 * 1.2, 57, 2], 颈: [侧倾, 47, 2], 髋: [0, 30, 0],
+    膝A: [-5, (30 + Math.max(0, 摆A) * 9) / 2 + 1, 摆A * 8 + 5], 脚A: [-5, Math.max(0, 摆A) * 9, 摆A * 16],
+    膝B: [5, (30 + Math.max(0, 摆B) * 9) / 2 + 1, 摆B * 8 + 5], 脚B: [5, Math.max(0, 摆B) * 9, 摆B * 16],
+    肘A: [-6, 44 + 摆B * 2, 摆B * 6 + 3], 手A: [-7, 40 + 摆B * 4, 摆B * 13],
+    肘B: [6, 44 + 摆A * 2, 摆A * 6 + 3], 手B: [7, 40 + 摆A * 4, 摆A * 13],
+  };
+}
+function 画火柴人() {
+  const 局部 = 姿态点();
+  const 旋 = 阶段 === '摔倒' ? 摔角 : (1 - 翻转) * Math.PI * 2;   // 二段跳翻跟头就是这行！
+  const P = {};
+  for (const 名 in 局部) {
+    let [x, y, z] = 局部[名];
+    if (旋) { const dy = y - 34, dz = z; y = 34 + dy * Math.cos(旋) - dz * Math.sin(旋); z = dy * Math.sin(旋) + dz * Math.cos(旋); }
+    P[名] = 投影(x, y + 玩家y, 后移当前 + z);
+  }
+  const 前 = '#ff8a3d', 后 = '#d4622a';
+  骨架线(P.肘A, P.手A, 后); 骨架线(P.膝A, P.脚A, 后);
+  骨架线(P.颈, P.肘A, 后); 骨架线(P.髋, P.膝A, 后);
+  骨架线(P.髋, P.颈, 前, 7);
+  骨架线(P.髋, P.膝B, 前); 骨架线(P.膝B, P.脚B, 前);
+  骨架线(P.颈, P.肘B, 前); 骨架线(P.肘B, P.手B, 前);
+  /* 头（和身体同色，没有眼睛，红头带） */
+  const h = P.头, r = 8 * h.s;
+  const 波 = Math.sin(Date.now() * 0.02) * 4;   // 飘起来的带子（画在头后面）
+  笔.strokeStyle = '#ff4d6d'; 笔.lineWidth = Math.max(2, 2.6 * h.s); 笔.lineCap = 'round';
+  笔.beginPath(); 笔.moveTo(h.x - r * 0.8, h.y - r * 0.3);
+  笔.quadraticCurveTo(h.x - r * 2, h.y - r * 0.5 + 波, h.x - r * 3, h.y - r * 0.2 + 波); 笔.stroke();
+  笔.fillStyle = 前;   // 和身体一个颜色！
+  笔.beginPath(); 笔.arc(h.x, h.y, r, 0, 6.3); 笔.fill();
+  笔.strokeStyle = 后; 笔.lineWidth = Math.max(1.5, 1.4 * h.s); 笔.stroke();
+  笔.strokeStyle = '#ff4d6d'; 笔.lineWidth = Math.max(2.5, 3 * h.s);   // 红头带
+  笔.beginPath(); 笔.moveTo(h.x - r * 0.92, h.y - r * 0.28); 笔.lineTo(h.x + r * 0.92, h.y - r * 0.28); 笔.stroke();
+}
+
+/* ========== 🖥 界面 ========== */
+function 画顶部信息() {
+  字(26 + Math.max(0, 金币弹跳) * 1.4);
+  笔.textAlign = 'left'; 笔.textBaseline = 'top';
+  笔.strokeStyle = 'rgba(0,0,0,0.4)'; 笔.lineWidth = 3;
+  笔.strokeText('🪙 ' + 金币数, 14, 12);
+  笔.fillStyle = '#ffd60a'; 笔.fillText('🪙 ' + 金币数, 14, 12);
+  const x0 = 118, x1 = 宽 - 100, y = 22, 进度 = Math.min(1, 距离 / 关卡表[关 - 1].长度);
+  笔.fillStyle = 'rgba(255,255,255,0.35)'; 笔.fillRect(x0, y, x1 - x0, 7);
+  笔.fillStyle = '#7ee8fa'; 笔.fillRect(x0, y, (x1 - x0) * 进度, 7);
+  笔.font = '15px serif'; 笔.textBaseline = 'middle';
+  笔.fillText('🏃', x0 + (x1 - x0) * 进度 - 8, y + 3); 笔.fillText('🏁', x1 + 4, y + 3);
+  字(18); 笔.textAlign = 'right'; 笔.textBaseline = 'top';
+  const 关字 = (模式 === '双人' ? '👥 第 ' : '第 ') + 关 + ' 关';
+  笔.strokeStyle = 'rgba(0,0,0,0.4)'; 笔.strokeText(关字, 宽 - 14, 12);
+  笔.fillStyle = '#ffffff'; 笔.fillText(关字, 宽 - 14, 12);
+}
+function 画视角按钮() {
+  笔.fillStyle = 'rgba(20,20,50,0.45)';
+  笔.beginPath(); 笔.arc(视角按钮.x, 视角按钮.y, 视角按钮.半径, 0, 6.3); 笔.fill();
+  笔.strokeStyle = 'rgba(255,255,255,0.8)'; 笔.lineWidth = 2; 笔.stroke();
+  笔.font = '20px serif'; 笔.textAlign = 'center'; 笔.textBaseline = 'middle';
+  笔.fillText(视角 === '第三' ? '🎥' : '👁️', 视角按钮.x, 视角按钮.y + 1);
+}
+function 画小地图() {   // 左上角小地图：认路全靠它
+  const 图x = 12, 图y = 52, 图宽 = 104, 图高 = 104, 比例 = 0.09;
+  笔.save();
+  笔.fillStyle = 'rgba(20,20,50,0.35)'; 笔.fillRect(图x, 图y, 图宽, 图高);
+  笔.strokeStyle = 'rgba(255,255,255,0.5)'; 笔.lineWidth = 1; 笔.strokeRect(图x, 图y, 图宽, 图高);
+  笔.beginPath(); 笔.rect(图x, 图y, 图宽, 图高); 笔.clip();
+  const 转 = s => { const v = 视野(s.x, s.z); return { x: 图x + 图宽 / 2 + v.横 * 比例, y: 图y + 图高 - 12 - v.纵 * 比例 }; };
+  笔.strokeStyle = '#ffffff'; 笔.lineWidth = 3; 笔.lineJoin = 'round';   // 跑道
+  笔.beginPath(); let 起画 = false;
+  for (let i = Math.max(0, 最近样本 - 4); i < 中心线.length; i++) {
+    const v = 视野(中心线[i].x, 中心线[i].z);
+    if (v.纵 > 1000) break;
+    if (v.纵 < -60) continue;
+    const p = 转(中心线[i]);
+    起画 ? 笔.lineTo(p.x, p.y) : 笔.moveTo(p.x, p.y); 起画 = true;
+  }
+  笔.stroke();
+  for (const o of 世界障碍) {   // 障碍小点
+    const v = 视野(o.x, o.z);
+    if (v.纵 < 0 || v.纵 > 1000) continue;
+    笔.fillStyle = o.色; 笔.beginPath();
+    笔.arc(图x + 图宽 / 2 + v.横 * 比例, 图y + 图高 - 12 - v.纵 * 比例, 2, 0, 6.3); 笔.fill();
+  }
+  if (世界终点) {   // 终点旗
+    const v = 视野(世界终点.x, 世界终点.z);
+    笔.font = '10px serif'; 笔.textAlign = 'center';
+    笔.fillText('🏁', 图x + 图宽 / 2 + Math.max(-46, Math.min(46, v.横 * 比例)), 图y + 图高 - 12 - Math.max(0, Math.min(88, v.纵 * 比例)));
+  }
+  笔.fillStyle = '#ff8a3d'; 笔.beginPath();   // 我自己
+  笔.arc(图x + 图宽 / 2, 图y + 图高 - 12, 4, 0, 6.3); 笔.fill();
+  笔.strokeStyle = '#ffffff'; 笔.lineWidth = 1.5; 笔.stroke();
+  笔.restore();
+}
+function 画横幅() {
+  笔.globalAlpha = Math.min(1, 横幅计时 / 30);
+  笔.textAlign = 'center'; 笔.textBaseline = 'middle';
+  字(52); 笔.strokeStyle = 'rgba(20,20,50,0.8)'; 笔.lineWidth = 7;
+  笔.strokeText('第 ' + 关 + ' 关', 宽 / 2, 205); 笔.fillStyle = '#ffffff'; 笔.fillText('第 ' + 关 + ' 关', 宽 / 2, 205);
+  const 双行 = 模式 === '双人';
+  笔.fillStyle = 'rgba(20,20,50,0.55)';
+  笔.fillRect(40, 248, 宽 - 80, 双行 ? 60 : 40);
+  字(16, false); 笔.fillStyle = '#ffd60a'; 笔.fillText(关卡表[关 - 1].提示, 宽 / 2, 268);
+  if (双行) { 字(14, false); 笔.fillStyle = '#7ee8fa'; 笔.fillText('👥 P1：A/D 转向　　P2：J 跳 · K 滑铲　　C/🎥 切视角', 宽 / 2, 290); }
+  else { 字(12, false); 笔.fillStyle = 'rgba(126,232,250,0.85)'; 笔.fillText('C / 🎥 切换视角', 宽 / 2, 双行 ? 290 : 278); }
+  笔.globalAlpha = 1;
+}
+function 闪一下(文字, y) {
+  if (Math.floor(Date.now() / 500) % 2 === 0) { 字(21); 笔.fillStyle = '#ffffff'; 笔.textAlign = 'center'; 笔.textBaseline = 'middle'; 笔.fillText(文字, 宽 / 2, y); }
+}
+function 画封面() {
+  笔.textAlign = 'center'; 笔.textBaseline = 'middle';
+  字(46); 笔.fillStyle = 'rgba(20,20,50,0.35)'; 笔.fillText('火柴人跑酷 3D', 宽 / 2 + 3, 135);
+  笔.fillStyle = '#ffffff'; 笔.fillText('火柴人跑酷 3D', 宽 / 2, 132);
+  字(15, false); 笔.fillStyle = '#22305c'; 笔.fillText('整张地图自由跑 · 拐弯大道 · 双视角 · 5 大关', 宽 / 2, 170);
+  字(14, false); 笔.fillStyle = '#22305c';
+  笔.fillText('单人：← → 转向（手机按住拖动）　↑/空格/点=跳　↓/下滑=滑铲', 宽 / 2, 378);
+  笔.fillText('按 C 或点 🎥：第一/第三视角随时切换！', 宽 / 2, 400);
+  笔.fillText('双人：P1 用 A/D 转向（左半屏拖），P2 用 J 跳、K 铲（右半屏）', 宽 / 2, 422);
+  按钮们.forEach((b, i) => {   // 两个模式大按钮
+    const 双 = i === 1;
+    笔.fillStyle = 双 ? '#ffd60a' : 'rgba(255,255,255,0.92)';
+    笔.strokeStyle = 双 ? '#e0a800' : '#9fb2d8'; 笔.lineWidth = 2;
+    笔.fillRect(90, b.y, 240, 46); 笔.strokeRect(90, b.y, 240, 46);
+    字(19); 笔.fillStyle = '#22305c'; 笔.fillText(b.文字, 宽 / 2, b.y + 18);
+    字(12, false); 笔.fillStyle = '#4a5a8a'; 笔.fillText(b.副, 宽 / 2, b.y + 36);
+  });
+  字(13, false); 笔.fillStyle = '#22305c'; 笔.fillText('点按钮，或按键盘 1 / 2 选模式', 宽 / 2, 570);
+  if (最高关 > 1) {
+    字(16); 笔.fillStyle = '#0e8f6f';
+    笔.fillText(最高关 > 5 ? '🏆 全通关！金币最佳：🪙' + 总金币纪录 : '⭐ 最高纪录：打到第 ' + Math.min(最高关, 5) + ' 关', 宽 / 2, 598);
+  }
+  字(12, false); 笔.fillStyle = 'rgba(255,255,255,0.7)'; 笔.fillText('⚡ QF工作室 · 皮皮出品', 宽 / 2, 622);
+}
+function 画失败() {
+  笔.fillStyle = 'rgba(20,20,45,0.72)'; 笔.fillRect(0, 0, 宽, 高);
+  笔.textAlign = 'center'; 笔.textBaseline = 'middle';
+  笔.font = '56px serif'; 笔.fillText('💫', 宽 / 2, 200);
+  字(32); 笔.fillStyle = '#ff8fa3'; 笔.fillText('哎呀，摔了个屁股蹲儿！', 宽 / 2, 285);
+  字(19, false); 笔.fillStyle = '#e8e8f0';
+  const 提醒 = 模式 === '双人' ? '两位配合再来，稳一点！' : '差一点点就过去了，第 ' + 关 + ' 关再来！';
+  笔.fillText(提醒, 宽 / 2, 330);
+  闪一下('点击 / 空格 重来', 400);
+}
+function 画过关() {
+  笔.fillStyle = 'rgba(20,20,45,0.6)'; 笔.fillRect(0, 0, 宽, 高);
+  笔.textAlign = 'center'; 笔.textBaseline = 'middle';
+  笔.font = '52px serif'; 笔.fillText('🎉', 宽 / 2, 190);
+  字(36); 笔.fillStyle = '#ffd60a'; 笔.fillText('第 ' + 关 + ' 关 通过！', 宽 / 2, 275);
+  字(21, false); 笔.fillStyle = '#ffffff';
+  笔.fillText((模式 === '双人' ? '两人一条心，' : '') + '本局金币：🪙 × ' + 金币数, 宽 / 2, 322);
+  闪一下('点击 / 空格 → 挑战第 ' + (关 + 1) + ' 关', 392);
+}
+function 画通关() {
+  笔.fillStyle = 'rgba(20,20,45,0.6)'; 笔.fillRect(0, 0, 宽, 高);
+  笔.textAlign = 'center'; 笔.textBaseline = 'middle';
+  笔.font = '60px serif'; 笔.fillText('🏆', 宽 / 2, 185);
+  字(36); 笔.fillStyle = '#ffd60a'; 笔.fillText('五关全部通关！', 宽 / 2, 270);
+  字(22, false); 笔.fillStyle = '#ffffff';
+  笔.fillText(模式 === '双人' ? '双人组合，天下无敌！' : '你就是闪电工作室的跑酷之王！', 宽 / 2, 318);
+  笔.fillText('总金币：🪙 × ' + 金币数 + '　（最佳 ' + 总金币纪录 + '）', 宽 / 2, 348);
+  闪一下('点击 / 空格 回到封面', 410);
+}
+
+/* 开机！先铺一小段跑道当封面背景 */
+中心线 = [{ x: 0, z: 0, 角: 0, 距: 0 }]; 下一障碍距 = 750; 下一金币距 = 1200; 铺路(1400);
+requestAnimationFrame(某帧过去了);
+</script>
+</body>
+</html>

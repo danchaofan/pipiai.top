@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>炸弹快跑 · 双人热土豆 v3</title>
+<style>
+  /* ========== 🖼 页面布置 ========== */
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #2a1d47;
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden; touch-action: none; /* 玩的时候不让页面乱滚 */
+  }
+  canvas { width: min(100vw, calc(100dvh * 480 / 640)); height: auto; }
+</style>
+</head>
+<body><style id="pipiai-exit-style">#pipiai-exit-btn{position:fixed;left:12px;top:12px;z-index:2147483647;display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:999px;background:rgba(10,14,42,.72);border:1px solid rgba(255,214,10,.55);color:#ffd60a;font:800 14px/1.2 "PingFang SC","Microsoft YaHei",system-ui,sans-serif;text-decoration:none;opacity:.45;transition:opacity .2s;box-shadow:0 4px 14px rgba(0,0,0,.35)}#pipiai-exit-btn:hover{opacity:1}</style><a id="pipiai-exit-btn" data-pipiai-exit="1" href="../../index.html" title="回到游戏中心">🏠 退出</a>
+<canvas id="游戏画面" width="480" height="640"></canvas>
+<script>
+/* ========== 💣 炸弹快跑 v3 · 双人热土豆 · 大地图版 ==========
+   v2 大王纠偏："两个人在2D的地图中互相传炸弹，倒计时结束后拿着炸弹的人输"
+   v3 大王钦点："地图再大一点" → 720 宽三层大竞技场 + 自动拉远镜头
+   QF工作室 ⚡ 出品 */
+
+const 画布 = document.getElementById('游戏画面');
+const 笔 = 画布.getContext('2d');
+const 宽 = 480, 高 = 640;
+
+/* ========== ⚙️ 一改就见效的数字（敢不敢挑战区） ========== */
+const 世界宽 = 720;         // 地图有多大（v2 只有 480，大王说再大一点！）
+const 世界高 = 700;
+const 地面y = 600;
+const 走路速度 = 3.6;
+const 持弹加速 = 1.15;     // 抱着炸弹急得跑快多少倍（🔥 挑战：改成 1.5，炸弹烫手 turbo！）
+const 跳跃力度 = 12.5;
+const 重力 = 0.55;
+const 引信最短秒 = 6;      // 每局倒计时 6~10 秒随机
+const 引信浮动秒 = 4;
+const 传弹冷却秒 = 0.8;    // 传完多久才能再传（防无限反弹甩锅）
+const 胜利分 = 3;          // 先拿几分赢整场
+const 最小缩放 = 0.62;     // 镜头最远拉多远（越小地图看得越全、小人越小）
+
+/* ========== 🏠 游戏状态 ========== */
+let 阶段 = '菜单';         // 菜单 / 游戏中 / 结算 / 终局
+let 模式 = '双人';         // 单人（打机器人）/ 双人
+let 回合 = 0;
+let 回合开始计时 = 0;
+let 结算计时 = 0;
+let 结算文本 = '';
+let 终局赢家 = null;
+let 下落炸弹 = null;        // { x, y, 竖速, 目标 }
+let 抖动倒计时 = 0;
+let 爆闪 = 0;
+let 粒子列表 = [];
+let 糖果列表 = [];
+let 飘字列表 = [];
+const 彩虹色 = ['#ff6b81', '#ffd60a', '#7bed9f', '#5fa8ff', '#c56cf0', '#ff9f43'];
+
+/* ========== 🧍 两个小人（橙头 P1 / 蓝头 P2） ========== */
+function 造小人(x, 头色) {
+  return { x, y: 地面y, 竖速: 0, 在地: true, 腿相位: 0, 头色, 拿着: null, 分数: 0, 是机器人: false, 输入: { 左: false, 右: false, 跳: false, 下: false } };
+}
+const 玩家1 = 造小人(110, '#ff9f43');
+const 玩家2 = 造小人(610, '#5fa8ff');
+let 机器人 = { 发呆: 0 };
+
+/* ========== 📷 大乱斗镜头：两人分开自动拉远，整张地图尽收眼底 ========== */
+const 相机 = { x: 世界宽 / 2, y: 世界高 / 2, 缩放: 1 };
+function 更新相机(dt) {
+  const 中x = (玩家1.x + 玩家2.x) / 2;
+  const 中y = (玩家1.y + 玩家2.y) / 2 - 80;
+  const spanX = Math.abs(玩家1.x - 玩家2.x) + 280;
+  const spanY = Math.abs(玩家1.y - 玩家2.y) + 340;
+  const 目标缩放 = Math.max(最小缩放, Math.min(1, 宽 / spanX, 高 / spanY));
+  相机.缩放 += (目标缩放 - 相机.缩放) * Math.min(1, 0.18 * dt);
+  const z = 相机.缩放, 半宽 = (宽 / 2) / z, 半高 = (高 / 2) / z;
+  const 目标x = 半宽 * 2 >= 世界宽 ? 世界宽 / 2 : Math.min(世界宽 - 半宽, Math.max(半宽, 中x));
+  const 目标y = 半高 * 2 >= 世界高 ? 世界高 / 2 : Math.min(世界高 - 半高, Math.max(半高, 中y));
+  相机.x += (目标x - 相机.x) * Math.min(1, 0.2 * dt);
+  相机.y += (目标y - 相机.y) * Math.min(1, 0.2 * dt);
+}
+
+/* ========== 🧱 平台场地（三层楼七块跳板，单向：从下能跳穿上去，S/↓ 钻下来） ========== */
+const 平台列表 = [
+  { x: 40, y: 476, w: 120 },    // 一层左
+  { x: 280, y: 476, w: 160 },   // 一层中央大桥
+  { x: 560, y: 476, w: 120 },   // 一层右
+  { x: 140, y: 372, w: 110 },   // 二层左
+  { x: 470, y: 372, w: 110 },   // 二层右
+  { x: 305, y: 268, w: 120 },   // 三层王座
+];
+
+/* ========== 🔊 声音（现场合成，不用音频文件） ========== */
+let 音响 = null;
+function 确保音响() { if (!音响) 音响 = new AudioContext(); }
+function 播放音(频率列表, 时长 = 0.15, 类型 = 'sine', 音量 = 0.2) {
+  if (!音响) return;
+  频率列表.forEach((频率, 序号) => {
+    const 振荡器 = 音响.createOscillator(), 音量控制 = 音响.createGain();
+    振荡器.type = 类型; 振荡器.frequency.value = 频率;
+    const 开始于 = 音响.currentTime + 序号 * 0.09;
+    振荡器.connect(音量控制); 音量控制.connect(音响.destination);
+    音量控制.gain.setValueAtTime(音量, 开始于);
+    音量控制.gain.exponentialRampToValueAtTime(0.001, 开始于 + 时长);
+    振荡器.start(开始于); 振荡器.stop(开始于 + 时长);
+  });
+}
+const 声_跳 = () => 播放音([440], 0.07, 'triangle', 0.08);
+const 声_接弹 = () => 播放音([196, 262], 0.12, 'square', 0.12);
+const 声_嘀嗒 = (f) => 播放音([f], 0.03, 'square', 0.07);
+const 声_传弹 = () => 播放音([740, 990], 0.09, 'sine', 0.18);
+const 声_爆 = () => 播放音([90, 55], 0.4, 'sawtooth', 0.28);
+const 声_胜利 = () => 播放音([523, 659, 784, 1047], 0.2);
+
+/* ========== ✨ 小特效 ========== */
+function 飘字(文字, x, y, 色, 大 = 20) { 飘字列表.push({ 文字, x, y, 色, 大, 寿命: 1 }); }
+function 爆炸彩糖(x, y) {
+  爆闪 = 0.25;
+  for (let i = 0; i < 12; i++) 糖果列表.push({ x, y, 横速: (Math.random() - 0.5) * 11, 竖速: -Math.random() * 8 - 2, 转: Math.random() * 6, 色: 彩虹色[i % 6] });
+  for (let i = 0; i < 18; i++) 粒子列表.push({ x, y, 颜色: 彩虹色[i % 6], 寿命: 1, 横速: (Math.random() - 0.5) * 10, 竖速: -Math.random() * 9 - 1, 大小: 5 });
+}
+
+/* ========== 🎬 比赛流程 ========== */
+function 开始比赛(选模式) {
+  模式 = 选模式;
+  回合 = 0; 玩家1.分数 = 0; 玩家2.分数 = 0;
+  玩家2.是机器人 = (选模式 === '单人');
+  机器人 = { 发呆: 0 };
+  下落炸弹 = null; 粒子列表 = []; 糖果列表 = []; 飘字列表 = [];
+  新回合();
+}
+function 新回合() {
+  回合++;
+  [玩家1, 玩家2].forEach(p => { p.x = p === 玩家1 ? 110 : 610; p.y = 地面y; p.竖速 = 0; p.在地 = true; p.拿着 = null; });
+  const 目标 = Math.random() < 0.5 ? 玩家1 : 玩家2;   // 炸弹天上掉，砸谁算谁
+  下落炸弹 = { x: 目标.x + (Math.random() * 90 - 45), y: -40, 竖速: 0, 目标 };
+  回合开始计时 = 1.2;
+  阶段 = '游戏中';
+}
+function 接上(p) {
+  p.拿着 = { 引信剩: 引信最短秒 + Math.random() * 引信浮动秒, 引信总: 0, 嘀嗒累计: 0, 冷却: 0 };
+  p.拿着.引信总 = p.拿着.引信剩;
+  下落炸弹 = null; 声_接弹();
+  飘字('接好！', p.x, p.y - 118, '#ffd60a');
+}
+function 回合结束(输家) {
+  爆炸彩糖(输家.x, 输家.y - 50); 声_爆(); 抖动倒计时 = 22;
+  const 赢家 = 输家 === 玩家1 ? 玩家2 : 玩家1;
+  赢家.分数++;
+  结算文本 = (输家 === 玩家1 ? '🟠 橙头被炸！' : '🔵 蓝头被炸！') + '　' + (赢家 === 玩家1 ? '🟠' : '🔵') + ' 得 1 分';
+  结算计时 = 2.4;
+  阶段 = '结算';
+  if (赢家.分数 >= 胜利分) 终局赢家 = 赢家; else 终局赢家 = null;
+}
+function 碰上了(a, b) { return Math.abs(a.x - b.x) < 30 && Math.abs(a.y - b.y) < 70; }
+
+/* ========== 🕹 操作（键盘 + 触屏都支持） ========== */
+const 键盘按下 = {};
+const 按钮布局 = [
+  { 键: 'p1左', x: 46, y: 598, 图: '◀' }, { 键: 'p1跳', x: 94, y: 586, 图: '▲' }, { 键: 'p1右', x: 142, y: 598, 图: '▶' },
+  { 键: 'p2左', x: 宽 - 142, y: 598, 图: '◀' }, { 键: 'p2跳', x: 宽 - 94, y: 586, 图: '▲' }, { 键: 'p2右', x: 宽 - 46, y: 598, 图: '▶' },
+];
+let 活触点 = {};   // 手指点住了哪些按钮（多点同时按）
+function 屏幕坐标(e) {
+  const 位置 = 画布.getBoundingClientRect();
+  return { x: (e.clientX - 位置.left) / 位置.width * 宽, y: (e.clientY - 位置.top) / 位置.height * 高 };
+}
+function 触点按钮(x, y) { const 命中 = 按钮布局.find(b => (x - b.x) ** 2 + (y - b.y) ** 2 < 32 * 32); return 命中 ? 命中.键 : null; }
+function 触按了(键) {
+  if (阶段 !== '游戏中') return false;
+  return Object.values(活触点).some(按住 => 按住 === 键);
+}
+document.addEventListener('keydown', e => {
+  确保音响();
+  if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
+  键盘按下[e.code] = true;
+  if (e.code === 'Escape') { 阶段 = '菜单'; return; }   // 随时按 Esc 溜回菜单
+  if (阶段 === '菜单') { if (e.code === 'Digit1') 开始比赛('单人'); if (e.code === 'Digit2') 开始比赛('双人'); }
+  if (阶段 === '终局') { if (e.code === 'Space') 开始比赛(模式); if (e.code === 'KeyM') { 阶段 = '菜单'; } }
+});
+document.addEventListener('keyup', e => { 键盘按下[e.code] = false; });
+画布.addEventListener('pointerdown', e => {
+  确保音响();
+  const 点 = 屏幕坐标(e);
+  if (阶段 === '游戏中') { 活触点[e.pointerId] = 触点按钮(点.x, 点.y); return; }
+  if (阶段 === '菜单') {
+    if (点.y > 380 && 点.y < 440) 开始比赛(点.x < 宽 / 2 ? '单人' : '双人');
+  } else if (阶段 === '终局') {
+    if (点.y > 430 && 点.y < 480) { if (点.x < 宽 / 2) 开始比赛(模式); else 阶段 = '菜单'; }
+  }
+});
+画布.addEventListener('pointermove', e => {
+  if (!(e.pointerId in 活触点)) return;
+  const 点 = 屏幕坐标(e);
+  活触点[e.pointerId] = 触点按钮(点.x, 点.y);
+});
+['pointerup', 'pointercancel'].forEach(名 => 画布.addEventListener(名, e => { delete 活触点[e.pointerId]; }));
+
+/* ========== 🤖 机器人（单人模式的蓝头） ========== */
+function 机器人思考(dt) {
+  const 我 = 玩家2, 他 = 玩家1, 输 = 我.输入;
+  输.左 = 输.右 = 输.跳 = 输.下 = false;
+  if (阶段 !== '游戏中') return;
+  机器人.发呆 -= dt / 60;
+  if (机器人.发呆 <= 0 && Math.random() < 0.006 * dt) 机器人.发呆 = 0.3;   // 偶尔反应慢半拍，给大王留胜机
+  if (机器人.发呆 > 0) return;
+  const dx = 他.x - 我.x, dy = 他.y - 我.y;   // dy 小于 0 = 他在楼上
+  const 被堵墙 = (我.x < 56 && dx < 0) || (我.x > 世界宽 - 56 && dx > 0);
+  if (我.拿着) {
+    if (dx > 10) 输.右 = true; else if (dx < -10) 输.左 = true;            // 抱着弹：追！
+    if (dy < -30 && Math.abs(dx) < 100 && 我.在地 && Math.random() < 0.25) 输.跳 = true;
+    if (被堵墙 && 我.在地 && Math.random() < 0.5) 输.跳 = true;
+  } else {
+    if (Math.abs(dx) < 130) { if (dx > 0) 输.左 = true; else 输.右 = true; }  // 没弹：逃！
+    if (dy < -30 && Math.abs(dx) < 80 && 我.在地 && Math.random() < 0.12) 输.跳 = true;
+    if (dy > 40 && 我.在地 && 我.y < 地面y && Math.random() < 0.3) 输.下 = true;  // 他在楼下：钻平台下去追
+    if (被堵墙 && 我.在地 && Math.random() < 0.6) 输.跳 = true;
+  }
+}
+
+/* ========== 🔄 主循环 ========== */
+let 上一帧时间 = 0;
+function 某帧过去了(时间戳) {
+  const dt = Math.min((时间戳 - 上一帧时间) / 16.666, 3);
+  上一帧时间 = 时间戳;
+  更新(dt);
+  绘制();
+  requestAnimationFrame(某帧过去了);
+}
+
+function 更新(dt) {
+  /* --- 菜单 / 终局只转特效 --- */
+  if (阶段 === '菜单' || 阶段 === '终局') { 转特效(dt); return; }
+
+  /* --- 结算：定格两秒看烟花，然后下一局或终局 --- */
+  if (阶段 === '结算') {
+    转特效(dt);
+    更新相机(dt);
+    结算计时 -= dt / 60;
+    if (结算计时 <= 0) { if (终局赢家) { 阶段 = '终局'; 声_胜利(); if (模式 === '单人' && 终局赢家 === 玩家1) 存机器人胜场(); } else 新回合(); }
+    return;
+  }
+
+  /* --- 读手柄（键盘 + 触屏按钮合体） --- */
+  玩家1.输入.左 = 键盘按下['KeyA'] || 触按了('p1左');
+  玩家1.输入.右 = 键盘按下['KeyD'] || 触按了('p1右');
+  玩家1.输入.跳 = 键盘按下['KeyW'] || 触按了('p1跳');
+  玩家1.输入.下 = 键盘按下['KeyS'];
+  if (玩家2.是机器人) 机器人思考(dt);
+  else {
+    玩家2.输入.左 = 键盘按下['ArrowLeft'] || 触按了('p2左');
+    玩家2.输入.右 = 键盘按下['ArrowRight'] || 触按了('p2右');
+    玩家2.输入.跳 = 键盘按下['ArrowUp'] || 触按了('p2跳');
+    玩家2.输入.下 = 键盘按下['ArrowDown'];
+  }
+
+  更新小人(玩家1, dt);
+  更新小人(玩家2, dt);
+  更新相机(dt);
+
+  /* --- 炸弹从天上掉下来（谁先挨着算谁的） --- */
+  if (下落炸弹) {
+    const b = 下落炸弹;
+    b.竖速 += 0.35 * dt; b.y += b.竖速 * dt;
+    b.x += (b.目标.x - b.x) * 0.05 * dt;
+    for (const p of [玩家1, 玩家2]) if (Math.abs(p.x - b.x) < 28 && b.y > p.y - 84 && b.y < p.y + 8) { 接上(p); break; }
+    if (下落炸弹 && 下落炸弹.y >= 地面y - 12) {
+      b.y = 地面y - 12;
+      for (const p of [玩家1, 玩家2]) if (Math.abs(p.x - b.x) < 32) { 接上(p); break; }
+    }
+  }
+
+  /* --- 碰到对方 = 传炸弹！（冷却没好就传不了，防止原地无限反弹） --- */
+  let 持有 = 玩家1.拿着 ? 玩家1 : (玩家2.拿着 ? 玩家2 : null);
+  if (持有 && 持有.拿着.冷却 <= 0 && 碰上了(玩家1, 玩家2)) {
+    const 接收 = 持有 === 玩家1 ? 玩家2 : 玩家1;
+    接收.拿着 = { 引信剩: 持有.拿着.引信剩, 引信总: 持有.拿着.引信总, 嘀嗒累计: 0, 冷却: 传弹冷却秒 };
+    持有.拿着 = null;
+    声_传弹(); 抖动倒计时 = 5;
+    飘字('传！', 接收.x, 接收.y - 118, '#7bed9f');
+    持有 = 接收;   // 弹已经换主人了，别忘了盯新的
+  }
+
+  /* --- 引信：嘀嗒嘀嗒……归零的人被炸 --- */
+  if (持有 && 持有.拿着) {
+    const 弹 = 持有.拿着;
+    弹.冷却 -= dt / 60; 弹.引信剩 -= dt / 60; 弹.嘀嗒累计 += dt / 60;
+    const 间隔 = Math.max(0.18, 0.5 * 弹.引信剩 / 弹.引信总);
+    if (弹.嘀嗒累计 >= 间隔) { 弹.嘀嗒累计 = 0; 声_嘀嗒(900 + (1 - 弹.引信剩 / 弹.引信总) * 700); }
+    if (弹.引信剩 <= 0) 回合结束(持有);
+  }
+
+  if (回合开始计时 > 0) 回合开始计时 -= dt / 60;
+  转特效(dt);
+}
+
+function 更新小人(p, dt) {
+  const 基速 = p.是机器人 ? 走路速度 * 0.94 : 走路速度;
+  const 速度 = p.拿着 ? 基速 * 持弹加速 : 基速;   // 抱着炸弹的人急得跑得快！
+  const 方向 = (p.输入.右 ? 1 : 0) - (p.输入.左 ? 1 : 0);
+  p.x += 方向 * 速度 * dt;
+  if (p.x < 24) p.x = 24;
+  if (p.x > 世界宽 - 24) p.x = 世界宽 - 24;
+
+  if (p.输入.跳 && p.在地) { p.竖速 = -跳跃力度; p.在地 = false; 声_跳(); }
+  p.竖速 += 重力 * dt;
+  const 旧底 = p.y;
+  p.y += p.竖速 * dt;
+  p.在地 = false;
+  if (p.y >= 地面y) { p.y = 地面y; p.竖速 = 0; p.在地 = true; }
+  else if (p.竖速 > 0 && !p.输入.下) {   // 往下落才踩台（按住下键就整个钻过去）
+    for (const 台 of 平台列表) {
+      if (p.x > 台.x - 12 && p.x < 台.x + 台.w + 12 && 旧底 <= 台.y + 8 && p.y >= 台.y) { p.y = 台.y; p.竖速 = 0; p.在地 = true; break; }
+    }
+  }
+  if (p.输入.下 && p.在地 && p.y < 地面y) { p.y += 14; p.在地 = false; p.竖速 = 2; }   // 钻下平台
+  p.腿相位 += (p.在地 && 方向 !== 0) ? 0.3 * dt : 0;
+}
+
+function 转特效(dt) {
+  for (let i = 糖果列表.length - 1; i >= 0; i--) {
+    const 糖 = 糖果列表[i];
+    糖.竖速 += 0.3 * dt; 糖.x += 糖.横速 * dt; 糖.y += 糖.竖速 * dt; 糖.转 += 0.2 * dt;
+    if (糖.y > 世界高 + 30) 糖果列表.splice(i, 1);
+  }
+  for (let i = 粒子列表.length - 1; i >= 0; i--) {
+    const 点 = 粒子列表[i];
+    点.x += 点.横速 * dt; 点.y += 点.竖速 * dt; 点.竖速 += 0.25 * dt; 点.寿命 -= 0.03 * dt;
+    if (点.寿命 <= 0) 粒子列表.splice(i, 1);
+  }
+  for (let i = 飘字列表.length - 1; i >= 0; i--) {
+    const 字 = 飘字列表[i];
+    字.y -= 0.8 * dt; 字.寿命 -= dt / 60 * 1.1;
+    if (字.寿命 <= 0) 飘字列表.splice(i, 1);
+  }
+  if (抖动倒计时 > 0) 抖动倒计时 -= dt;
+  if (爆闪 > 0) 爆闪 -= dt / 60;
+}
+function 存机器人胜场() {
+  const n = Number(localStorage.getItem('炸弹快跑_机器人胜场') || 0) + 1;
+  localStorage.setItem('炸弹快跑_机器人胜场', n);
+}
+
+/* ========== 🎨 绘制 ========== */
+function 绘制() {
+  笔.save();
+  if (抖动倒计时 > 0) 笔.translate((Math.random() - 0.5) * 10, (Math.random() - 0.5) * 10);
+
+  /* --- 黄昏天空（贴着屏幕画，不跟着镜头走） --- */
+  const 天 = 笔.createLinearGradient(0, 0, 0, 高);
+  天.addColorStop(0, '#2a1d47'); 天.addColorStop(0.55, '#6b3f6e'); 天.addColorStop(1, '#ff8a5c');
+  笔.fillStyle = 天; 笔.fillRect(0, 0, 宽, 高);
+  for (let i = 0; i < 34; i++) {
+    笔.globalAlpha = 0.3 + 0.5 * Math.abs(Math.sin(Date.now() / 700 + i));
+    笔.fillStyle = '#fff';
+    笔.fillRect((i * 97) % 宽, (i * 53) % 240, 2, 2);
+  }
+  笔.globalAlpha = 1;
+  笔.fillStyle = '#ffd27a'; 笔.beginPath(); 笔.arc(宽 * 0.72, 300, 46, 0, 6.29); 笔.fill();
+  笔.globalAlpha = 0.25; 笔.beginPath(); 笔.arc(宽 * 0.72, 300, 70, 0, 6.29); 笔.fill(); 笔.globalAlpha = 1;
+
+  /* --- 楼群剪影（跟着镜头慢慢平移，有纵深感） --- */
+  const 远偏 = ((相机.x * 0.35) % 140 + 140) % 140;
+  for (let i = -1; i < 宽 / 140 + 2; i++) {
+    const 种子 = Math.floor(相机.x * 0.35 / 140) + i;
+    笔.fillStyle = '#3a2b5c'; 笔.fillRect(i * 140 - 远偏, 400 - (((种子 * 137) % 150) + 150) % 150 - 60, 96, 300);
+  }
+  const 近偏 = ((相机.x * 0.6) % 170 + 170) % 170;
+  for (let i = -1; i < 宽 / 170 + 2; i++) {
+    const 种子 = Math.floor(相机.x * 0.6 / 170) + i;
+    const 楼高 = 120 + (((种子 * 89) % 130) + 130) % 130, 楼顶 = 470 - 楼高;
+    笔.fillStyle = '#241b3f'; 笔.fillRect(i * 170 - 近偏, 楼顶, 120, 楼高);
+    笔.fillStyle = 'rgba(255,217,122,0.55)';
+    for (let r = 0; r < 4; r++) for (let c = 0; c < 3; c++)
+      if ((((种子 * 7 + r * 3 + c) % 4) + 4) % 4 < 2) 笔.fillRect(i * 170 - 近偏 + 16 + c * 36, 楼顶 + 14 + r * 30, 12, 14);
+  }
+
+  if (阶段 !== '菜单') {
+    /* --- 世界坐标开拍：镜头推拉全在这里 --- */
+    笔.save();
+    笔.translate(宽 / 2, 高 / 2);
+    笔.scale(相机.缩放, 相机.缩放);
+    笔.translate(-相机.x, -相机.y);
+
+    /* 地面与马路 */
+    笔.fillStyle = '#4a4a66'; 笔.fillRect(-80, 地面y, 世界宽 + 160, 16);
+    笔.fillStyle = '#34344a'; 笔.fillRect(-80, 地面y + 16, 世界宽 + 160, 240);
+    笔.fillStyle = '#cfcfe6';
+    for (let x = 20; x < 世界宽; x += 80) 笔.fillRect(x, 地面y + 44, 44, 6);
+
+    /* 平台（楼顶跳板，上面一条青色亮边） */
+    平台列表.forEach(台 => {
+      笔.fillStyle = '#3d3358'; 笔.fillRect(台.x, 台.y, 台.w, 14);
+      笔.fillStyle = '#5a4a8a'; 笔.fillRect(台.x, 台.y, 台.w, 4);
+      笔.fillStyle = '#7ee8fa'; 笔.fillRect(台.x, 台.y, 台.w, 2);
+    });
+
+    画小人(玩家1);
+    画小人(玩家2);
+    if (下落炸弹) 画炸弹(下落炸弹.x, 下落炸弹.y, null);
+
+    /* 彩虹糖 / 火花 / 飘字（都在世界里飘） */
+    糖果列表.forEach(糖 => {
+      笔.save(); 笔.translate(糖.x, 糖.y); 笔.rotate(糖.转);
+      笔.fillStyle = 糖.色;
+      笔.fillRect(-7, -4, 14, 8); 笔.fillRect(-11, -3, 4, 6); 笔.fillRect(7, -3, 4, 6);
+      笔.restore();
+    });
+    粒子列表.forEach(点 => {
+      笔.globalAlpha = Math.max(0, 点.寿命); 笔.fillStyle = 点.颜色;
+      笔.beginPath(); 笔.arc(点.x, 点.y, 点.大小 * 点.寿命, 0, 6.29); 笔.fill();
+      笔.globalAlpha = 1;
+    });
+    笔.textAlign = 'center'; 笔.textBaseline = 'middle';
+    飘字列表.forEach(字 => {
+      笔.globalAlpha = Math.max(0, 字.寿命);
+      笔.font = `bold ${字.大}px system-ui, "PingFang SC", sans-serif`;
+      笔.lineWidth = 4; 笔.strokeStyle = 'rgba(20,10,30,0.7)'; 笔.strokeText(字.文字, 字.x, 字.y);
+      笔.fillStyle = 字.色; 笔.fillText(字.文字, 字.x, 字.y);
+      笔.globalAlpha = 1;
+    });
+    笔.restore();   // 镜头结束，回到屏幕坐标
+  }
+
+  /* --- 手机按钮（贴屏幕，双人各管一边） --- */
+  if (阶段 === '游戏中') {
+    笔.globalAlpha = 0.28; 笔.fillStyle = '#ffffff';
+    按钮布局.forEach(b => { 笔.beginPath(); 笔.arc(b.x, b.y, 26, 0, 6.29); 笔.fill(); });
+    笔.globalAlpha = 0.8; 笔.fillStyle = '#2a1d47'; 笔.font = 'bold 16px system-ui';
+    按钮布局.forEach(b => 笔.fillText(b.图, b.x, b.y));
+    笔.globalAlpha = 1;
+  }
+
+  if (爆闪 > 0) { 笔.globalAlpha = Math.min(0.75, 爆闪 / 0.25 * 0.75); 笔.fillStyle = '#fff'; 笔.fillRect(0, 0, 宽, 高); 笔.globalAlpha = 1; }
+
+  if (阶段 === '游戏中' || 阶段 === '结算') 画顶部信息();
+  if (阶段 === '游戏中' && 回合开始计时 > 0) {
+    笔.font = 'bold 40px system-ui, "PingFang SC", sans-serif'; 笔.textAlign = 'center';
+    笔.fillStyle = 'rgba(20,10,30,0.55)'; 笔.fillRect(0, 240, 宽, 80);
+    笔.fillStyle = '#ffd60a'; 笔.fillText('第 ' + 回合 + ' 局', 宽 / 2, 280);
+  }
+  if (阶段 === '结算') {
+    笔.fillStyle = 'rgba(30,18,50,0.66)'; 笔.fillRect(0, 230, 宽, 90);
+    笔.font = 'bold 26px system-ui, "PingFang SC", sans-serif'; 笔.textAlign = 'center';
+    笔.fillStyle = '#fff'; 笔.fillText(结算文本, 宽 / 2, 275);
+  }
+  if (阶段 === '菜单') 画菜单();
+  if (阶段 === '终局') 画终局();
+  笔.restore();
+}
+
+/* --- 一颗圆滚滚的炸弹（带滋滋响的火花） --- */
+function 画炸弹(x, y, 弹) {
+  笔.fillStyle = '#2b2b38'; 笔.beginPath(); 笔.arc(x, y, 13, 0, 6.29); 笔.fill();
+  笔.fillStyle = 'rgba(255,255,255,0.35)'; 笔.beginPath(); 笔.arc(x - 4, y - 4, 4, 0, 6.29); 笔.fill();
+  if (弹 && 弹.引信剩 / 弹.引信总 < 0.3 && Math.floor(Date.now() / 90) % 2 === 0) {
+    笔.fillStyle = '#ff4d6d'; 笔.beginPath(); 笔.arc(x, y, 13, 0, 6.29); 笔.fill();
+  }
+  笔.strokeStyle = '#c9a227'; 笔.lineWidth = 3;
+  笔.beginPath(); 笔.moveTo(x + 2, y - 12); 笔.quadraticCurveTo(x + 10, y - 20, x + 8, y - 26); 笔.stroke();
+  const r = 4 + Math.random() * 3;
+  笔.fillStyle = '#ffd60a'; 笔.beginPath(); 笔.arc(x + 8, y - 28, r, 0, 6.29); 笔.fill();
+  笔.fillStyle = '#ff8a5c'; 笔.beginPath(); 笔.arc(x + 8, y - 28, r * 0.5, 0, 6.29); 笔.fill();
+  if (弹 && 弹.冷却 > 0) {   // 刚传过来的炸弹：青色冷却圈，圈没消失前传不回去
+    笔.strokeStyle = '#7ee8fa'; 笔.lineWidth = 3;
+    笔.beginPath(); 笔.arc(x, y, 20, -Math.PI / 2, -Math.PI / 2 + (弹.冷却 / 传弹冷却秒) * Math.PI * 2); 笔.stroke();
+  }
+}
+function 画引信条(x, y, 弹) {
+  const 比例 = Math.max(0, 弹.引信剩 / 弹.引信总);
+  笔.fillStyle = 'rgba(0,0,0,0.5)'; 笔.fillRect(x - 20, y, 40, 6);
+  笔.fillStyle = 比例 > 0.5 ? '#7bed9f' : 比例 > 0.25 ? '#ffd60a' : '#ff4d6d';
+  笔.fillRect(x - 19, y + 1, 38 * 比例, 4);
+  if (比例 < 0.35) {
+    笔.font = 'bold 14px system-ui, "PingFang SC", sans-serif'; 笔.textAlign = 'center'; 笔.textBaseline = 'bottom';
+    笔.fillStyle = '#ff4d6d'; 笔.fillText('快甩！', x, y - 2);
+  }
+}
+
+/* --- 火柴小人（橙头 P1 / 蓝头 P2） --- */
+function 画小人(p) {
+  const x = p.x, y = p.y;
+  笔.lineCap = 'round'; 笔.lineWidth = 6; 笔.strokeStyle = '#f1f1f6';
+  const a = Math.sin(p.腿相位), b = Math.sin(p.腿相位 + Math.PI);
+  if (!p.在地) {
+    笔.beginPath(); 笔.moveTo(x, y - 30); 笔.lineTo(x - 11, y - 18); 笔.lineTo(x - 4, y - 8); 笔.stroke();
+    笔.beginPath(); 笔.moveTo(x, y - 30); 笔.lineTo(x + 12, y - 22); 笔.lineTo(x + 8, y - 10); 笔.stroke();
+  } else if (a === 0 && b === 0) {
+    笔.beginPath(); 笔.moveTo(x, y - 30); 笔.lineTo(x - 8, y); 笔.stroke();
+    笔.beginPath(); 笔.moveTo(x, y - 30); 笔.lineTo(x + 8, y); 笔.stroke();
+  } else {
+    笔.beginPath(); 笔.moveTo(x, y - 30); 笔.lineTo(x + a * 17, y - Math.max(0, -b) * 9); 笔.stroke();
+    笔.beginPath(); 笔.moveTo(x, y - 30); 笔.lineTo(x + b * 17, y - Math.max(0, -a) * 9); 笔.stroke();
+  }
+  笔.beginPath(); 笔.moveTo(x, y - 32); 笔.lineTo(x, y - 54); 笔.stroke();
+  if (p.拿着) {
+    笔.beginPath(); 笔.moveTo(x, y - 52); 笔.lineTo(x - 10, y - 76); 笔.stroke();
+    笔.beginPath(); 笔.moveTo(x, y - 52); 笔.lineTo(x + 10, y - 76); 笔.stroke();
+  } else {
+    笔.beginPath(); 笔.moveTo(x, y - 52); 笔.lineTo(x + b * 13, y - 38); 笔.stroke();
+    笔.beginPath(); 笔.moveTo(x, y - 52); 笔.lineTo(x + a * 13, y - 38); 笔.stroke();
+  }
+  笔.fillStyle = p.头色; 笔.beginPath(); 笔.arc(x, y - 66, 12, 0, 6.29); 笔.fill();
+  if (p.是机器人) {   // 机器人戴个小天线，一眼认出
+    笔.strokeStyle = '#cfd8ff'; 笔.lineWidth = 2;
+    笔.beginPath(); 笔.moveTo(x, y - 78); 笔.lineTo(x, y - 86); 笔.stroke();
+    笔.fillStyle = '#ff4d6d'; 笔.beginPath(); 笔.arc(x, y - 88, 3, 0, 6.29); 笔.fill();
+  }
+  if (p.拿着) { 画炸弹(x, y - 96, p.拿着); 画引信条(x, y - 122, p.拿着); }
+}
+
+/* ========== 📊 界面 ========== */
+function 画顶部信息() {
+  笔.font = 'bold 24px system-ui, "PingFang SC", sans-serif'; 笔.textBaseline = 'top';
+  笔.textAlign = 'left'; 笔.fillStyle = '#ff9f43';
+  笔.fillText('🟠 ' + '●'.repeat(玩家1.分数) + '○'.repeat(Math.max(0, 胜利分 - 玩家1.分数)), 14, 12);
+  笔.textAlign = 'right'; 笔.fillStyle = '#5fa8ff';
+  笔.fillText('●'.repeat(玩家2.分数) + '○'.repeat(Math.max(0, 胜利分 - 玩家2.分数)) + ' 🔵', 宽 - 14, 12);
+  if (模式 === '单人') { 笔.textAlign = 'center'; 笔.font = '14px system-ui, "PingFang SC", sans-serif'; 笔.fillStyle = 'rgba(255,255,255,0.7)'; 笔.fillText('打机器人', 宽 / 2, 18); }
+}
+
+function 画菜单() {
+  笔.fillStyle = 'rgba(30,18,50,0.72)'; 笔.fillRect(0, 0, 宽, 高);
+  笔.textAlign = 'center'; 笔.textBaseline = 'middle';
+  笔.font = '72px serif'; 笔.fillText('💣', 宽 / 2, 110);
+  笔.font = 'bold 40px system-ui, "PingFang SC", sans-serif';
+  笔.fillStyle = '#ffd60a'; 笔.fillText('炸弹快跑', 宽 / 2, 192);
+  笔.font = '18px system-ui, "PingFang SC", sans-serif'; 笔.fillStyle = '#ffb35c';
+  笔.fillText('双人热土豆 · 大竞技场 · 谁抱着炸弹谁输！', 宽 / 2, 232);
+  /* 两个模式大按钮 */
+  笔.fillStyle = '#5a4a8a';
+  笔.fillRect(40, 380, 180, 60); 笔.fillRect(260, 380, 180, 60);
+  笔.strokeStyle = '#7ee8fa'; 笔.lineWidth = 2;
+  笔.strokeRect(40, 380, 180, 60); 笔.strokeRect(260, 380, 180, 60);
+  笔.font = 'bold 20px system-ui, "PingFang SC", sans-serif'; 笔.fillStyle = '#fff';
+  笔.fillText('🤖 单人', 130, 400); 笔.font = '13px system-ui, "PingFang SC", sans-serif'; 笔.fillText('打机器人（按1）', 130, 424);
+  笔.font = 'bold 20px system-ui, "PingFang SC", sans-serif'; 笔.fillText('👥 双人（按2）', 350, 400); 笔.font = '13px system-ui, "PingFang SC", sans-serif'; 笔.fillText('一台键盘互甩锅', 350, 424);
+  笔.font = '16px system-ui, "PingFang SC", sans-serif'; 笔.fillStyle = '#e8e8f0';
+  笔.fillText('碰到对方 = 把炸弹传给他！', 宽 / 2, 480);
+  笔.fillStyle = '#7ee8fa';
+  笔.fillText('🟠 W跳 A左 D右（S钻台）', 宽 / 2, 512);
+  笔.fillText('🔵 ↑跳 ←左 →右（↓钻台）', 宽 / 2, 536);
+  const 胜场 = Number(localStorage.getItem('炸弹快跑_机器人胜场') || 0);
+  if (胜场 > 0) { 笔.fillStyle = '#7bed9f'; 笔.fillText('🏆 你已经赢过机器人 ' + 胜场 + ' 场', 宽 / 2, 568); }
+  笔.font = '14px system-ui, "PingFang SC", sans-serif'; 笔.fillStyle = 'rgba(255,255,255,0.55)';
+  笔.fillText('QF工作室 ⚡ 大王监制', 宽 / 2, 608);
+}
+
+function 画终局() {
+  笔.fillStyle = 'rgba(30,18,50,0.82)'; 笔.fillRect(0, 0, 宽, 高);
+  笔.textAlign = 'center'; 笔.textBaseline = 'middle';
+  笔.font = '56px serif'; 笔.fillText('🏆', 宽 / 2, 150);
+  笔.font = 'bold 36px system-ui, "PingFang SC", sans-serif';
+  笔.fillStyle = 终局赢家 === 玩家1 ? '#ff9f43' : '#5fa8ff';
+  const 名字 = 模式 === '单人' ? (终局赢家 === 玩家1 ? '你赢了！' : '机器人赢了…') : (终局赢家 === 玩家1 ? '🟠 橙头获胜！' : '🔵 蓝头获胜！');
+  笔.fillText(名字, 宽 / 2, 230);
+  笔.font = 'bold 26px system-ui, "PingFang SC", sans-serif'; 笔.fillStyle = '#ffd60a';
+  笔.fillText(玩家1.分数 + ' 比 ' + 玩家2.分数, 宽 / 2, 282);
+  笔.font = '16px system-ui, "PingFang SC", sans-serif'; 笔.fillStyle = '#ffb35c';
+  笔.fillText(模式 === '单人' ? '机器人：下次可不会发呆了！' : '输的人去倒杯水，回来复仇！', 宽 / 2, 330);
+  笔.fillStyle = '#5a4a8a';
+  笔.fillRect(60, 430, 160, 50); 笔.fillRect(260, 430, 160, 50);
+  笔.strokeStyle = '#7ee8fa'; 笔.lineWidth = 2;
+  笔.strokeRect(60, 430, 160, 50); 笔.strokeRect(260, 430, 160, 50);
+  笔.font = 'bold 19px system-ui, "PingFang SC", sans-serif'; 笔.fillStyle = '#fff';
+  笔.fillText('再来一场（空格）', 140, 455); 笔.fillText('回菜单（M）', 340, 455);
+}
+
+/* 开机！ */
+requestAnimationFrame(某帧过去了);
+</script>
+</body>
+</html>

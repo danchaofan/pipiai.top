@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>⚡ QF 游戏中心</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚀</text></svg>">
+<link rel="stylesheet" href="style.css?v=2">
+</head>
+<body>
+
+<header class="hero">
+  <canvas id="星空"></canvas>
+  <div class="hero-inner">
+    <div class="avatar" id="头像">🚀</div>
+    <h1 id="大名">皮皮</h1>
+    <p class="motto"><span id="打字机"></span><span class="光标">▍</span></p>
+    <div class="hero-stats">
+      <div class="分类栏" id="分类栏"></div>
+    </div>
+    <p class="hero-sub">
+      <span class="chip">持续上新 ⚡</span>
+      <span class="chip dim" id="工作室章">QF工作室</span>
+    </p>
+  </div>
+</header>
+
+<main>
+  <section class="games" id="作品墙"></section>
+  <p class="empty" id="分类空" hidden></p>
+  <p class="empty" id="空状态" hidden>🏆 第一款游戏，虚位以待……<br>（老板说「发布」，它就会出现在这里）</p>
+</main>
+
+<footer>
+  <p id="版权行">© 皮皮出品</p>
+  <p class="privacy">🛡️ 本站只展示游戏作品，不含真实姓名、学校等个人信息</p>
+  <p class="beian"><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">京ICP备2026060776号-1</a></p>
+</footer>
+
+<script src="数据.js?v=2"></script>
+<script>
+/* ========== 🖼 基本信息填充 ========== */
+document.getElementById('头像').textContent = STUDIO.avatar || '🚀';
+document.getElementById('大名').textContent = STUDIO.hero || STUDIO.boss || '皮皮';
+document.title = STUDIO.title || '⚡ QF 游戏中心';
+document.getElementById('工作室章').textContent = STUDIO.name || '';
+document.getElementById('版权行').textContent = '© ' + (STUDIO.boss || '皮皮') + '出品';
+document.getElementById('空状态').hidden = GAMES.length > 0;
+
+/* ========== ⌨️ 副标题打字机：按句号分句，打完一句停 3.5 秒收回，再打下一句，循环 =========== */
+const 减动效 = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const 语录 = STUDIO.phrases || ['联机，单机。应有尽有。点开即玩。欢迎点评。'];
+const 打字框 = document.getElementById('打字机');
+const 整文 = 语录.join('');
+const 句子 = 整文.split('。').filter(段 => 段.length).map(段 => 段 + '。');
+if (减动效 || !句子.length) {
+  打字框.textContent = 整文;
+} else {
+  let 语 = 0, 字 = 0, 在删 = false;
+  (function 步() {
+    const 句 = 句子[语];
+    打字框.textContent = 在删 ? 句.slice(0, --字) : 句.slice(0, ++字);
+    if (!在删 && 字 === 句.length) { 在删 = true; return setTimeout(步, 3500); }
+    if (在删 && 字 === 0) { 在删 = false; 语 = (语 + 1) % 句子.length; }
+    setTimeout(步, 在删 ? 38 : 110);
+  })();
+}
+
+/* ========== 🖼 作品墙 ========== */
+const 墙 = document.getElementById('作品墙');
+GAMES.forEach((游戏, 序号) => {
+  const 卡 = document.createElement('article');
+  卡.className = 'card';
+  卡.dataset.category = 游戏.category || '';
+  卡.dataset.demo = 游戏.demo ? '1' : '0';
+  卡.innerHTML = `
+    <div class="cover ${游戏.cover ? '' : 'emoji-cover'}">
+      ${游戏.cover
+        ? `<img src="${游戏.cover}" alt="${游戏.name}" loading="lazy">`
+        : `<span class="big-emoji">${游戏.coverEmoji || '🎮'}</span>`}
+      ${序号 === 0 ? '<span class="new">🆕 最新</span>' : ''}
+      <span class="ver">${游戏.version}</span>
+    </div>
+    <div class="card-body">
+      <h2>${游戏.name}</h2>
+      <p class="tagline">${游戏.tagline}</p>
+      <div class="tags">${(游戏.tags || []).map(t => `<span>#${t}</span>`).join('')}</div>
+      <ul class="changelog">
+        ${(游戏.changelog || []).slice(0, 2).map(c => `<li>${c}</li>`).join('')}
+      </ul>
+      <a class="play" href="games/${游戏.id}/index.html" target="_blank" rel="noopener">▶ 现在就玩</a>
+    </div>`;
+  墙.appendChild(卡);
+});
+
+/* ========== 🗂 游戏分类栏（点分类即筛选，链接可带 #分类 直达） ========== */
+const 分类表 = ['全部', '跑酷', '沙盒', '射击', '格斗', '恐怖', '试玩版'];   // 爸爸定的分类 + 格斗 + 试玩版选项
+const 分类栏 = document.getElementById('分类栏');
+const 分类空 = document.getElementById('分类空');
+let 当前分类 = '全部';
+const 初始分类 = decodeURIComponent(location.hash.slice(1));
+if (分类表.includes(初始分类)) 当前分类 = 初始分类;
+
+分类表.forEach(名 => {
+  const 钮 = document.createElement('button');
+  钮.textContent = 名;
+  钮.className = 名 === 当前分类 ? '选中' : '';
+  钮.addEventListener('click', () => {
+    当前分类 = 名;
+    location.hash = 名 === '全部' ? '' : 名;
+    分类栏.querySelectorAll('button').forEach(b => b.classList.toggle('选中', b === 钮));
+    应用分类();
+  });
+  分类栏.appendChild(钮);
+});
+
+function 应用分类() {
+  let 可见 = 0;
+  document.querySelectorAll('.card').forEach(卡 => {
+    const 显示 = 当前分类 === '全部'
+      || 卡.dataset.category === 当前分类
+      || (当前分类 === '试玩版' && 卡.dataset.demo === '1');
+    卡.classList.toggle('隐藏', !显示);
+    if (显示) 可见++;
+  });
+  分类空.hidden = !(可见 === 0 && GAMES.length > 0);
+  分类空.textContent = '🚧 「' + 当前分类 + '」类暂时虚位以待，快了！';
+}
+应用分类();
+
+/* ========== 🎬 滚动入场 ========== */
+const 观察 = new IntersectionObserver(条 => 条.forEach(t => {
+  if (!t.isIntersecting) return;
+  t.target.classList.add('入场');
+  setTimeout(() => {
+    t.target.style.transitionDelay = '';
+    /* 入场完成后换短过渡：3D 倾斜跟手不拖泥带水 */
+    t.target.style.transition = 'transform .12s ease, border-color .22s ease, box-shadow .22s ease, opacity .3s ease';
+  }, 900);
+  观察.unobserve(t.target);
+}), { threshold: 0.12 });
+document.querySelectorAll('.card').forEach((卡, i) => {
+  卡.style.transitionDelay = (i % 4 * 80) + 'ms';
+  观察.observe(卡);
+});
+
+/* ========== 🃏 卡片 3D 跟随倾斜（仅鼠标设备） ========== */
+if (matchMedia('(pointer: fine)').matches && !减动效) {
+  document.querySelectorAll('.card').forEach(卡 => {
+    卡.addEventListener('pointermove', e => {
+      const r = 卡.getBoundingClientRect();
+      const x = (e.clientX - r.left) / r.width - .5;
+      const y = (e.clientY - r.top) / r.height - .5;
+      卡.style.transform = `perspective(900px) rotateX(${(-y * 7).toFixed(2)}deg) rotateY(${(x * 7).toFixed(2)}deg) translateY(-4px)`;
+      卡.style.setProperty('--mx', (x * 100 + 50) + '%');
+      卡.style.setProperty('--my', (y * 100 + 50) + '%');
+    });
+    卡.addEventListener('pointerleave', () => { 卡.style.transform = ''; });
+  });
+}
+
+/* ========== ⚡ 头顶星空 + 闪电（canvas，滚出视野自动暂停） ========== */
+const 画布 = document.getElementById('星空');
+const 笔 = 画布.getContext('2d');
+function 尺寸() {
+  const d = Math.min(devicePixelRatio || 1, 2);   /* 像素比封顶 2，高分辨率屏省一半绘制量 */
+  画布.width = 画布.offsetWidth * d;
+  画布.height = 画布.offsetHeight * d;
+  笔.setTransform(d, 0, 0, d, 0, 0);
+}
+addEventListener('resize', 尺寸);
+尺寸();
+const W = () => 画布.offsetWidth, H = () => 画布.offsetHeight;
+
+const 星 = [];
+const 星色 = ['#ffffff', '#ffd60a', '#9be8ff'];
+const 星数 = innerWidth < 640 ? 70 : 130;
+for (let i = 0; i < 星数; i++) {
+  星.push({ x: Math.random(), y: Math.random(), r: Math.random() * 1.6 + .4,
+            p: Math.random() * 6.28, s: .5 + Math.random() * 1.5,
+            c: 星色[Math.random() * 3 | 0] });
+}
+let 星空可见 = true, 在跑 = false;
+function 帧(t) {
+  if (!星空可见) { 在跑 = false; return; }   /* 滚出视野就停画，省电不发热 */
+  在跑 = true;
+  笔.clearRect(0, 0, W(), H());
+  for (const s of 星) {
+    笔.globalAlpha = .3 + .7 * Math.abs(Math.sin(t / 1000 * s.s + s.p));
+    笔.fillStyle = s.c;
+    笔.beginPath(); 笔.arc(s.x * W(), s.y * H(), s.r, 0, 6.29); 笔.fill();
+  }
+  笔.globalAlpha = 1;
+  if (!减动效) requestAnimationFrame(帧);
+}
+if (减动效) { 帧(0); }
+else {
+  new IntersectionObserver(条 => {
+    星空可见 = 条[0].isIntersecting;
+    if (星空可见 && !在跑) requestAnimationFrame(帧);
+  }).observe(document.querySelector('.hero'));
+  requestAnimationFrame(帧);
+}
+</script>
+</body>
+</html>
